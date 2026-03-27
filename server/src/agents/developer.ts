@@ -1,31 +1,60 @@
 /**
  * developer.ts — Developer agent
  *
- * For MVP: reads design.md and produces a detailed implementation plan (build.md).
- * Does NOT run actual code — produces a markdown plan that a future cycle can
- * use as input to real Claude Code execution.
+ * Reads the design.md artifact and produces a real implementation plan or code
+ * via a direct Claude CLI subprocess call. Falls back to mock output when
+ * CLAUDE_CODE_OAUTH_TOKEN is not set (dev / CI environments without a token).
  *
- * TODO: Real Claude Code integration
- * Replace the runClaude() call with a Bun.spawn() that runs Claude Code CLI
- * in a project-specific working directory, captures file diffs, and commits
- * them to the project git repo. Return the commit SHA as part of the result.
- *
- * Example (stubbed):
- *   const proc = Bun.spawn(['claude', '--print', '--dangerously-skip-permissions'], {
- *     cwd: projectWorkdir,
- *     env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token },
- *     stdin: 'pipe',
- *     stdout: 'pipe',
- *     stderr: 'pipe',
- *   });
+ * Subprocess pattern mirrors ~/agent-runner/src/worker.ts:
+ *   - Bun.spawn(['claude', '--print', '--dangerously-skip-permissions'])
+ *   - Auth token injected via CLAUDE_CODE_OAUTH_TOKEN env var
+ *   - Full prompt written to stdin; response read from stdout
  */
 
-import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getArtifactByPhase } from "../db.js";
 import { buildContextBlock, extractSummary, type AgentResult } from "./base.js";
 
+const MOCK_PLAN = `# Implementation Plan
+
+## File Structure
+\`\`\`
+server/
+  src/
+    index.ts        ← Elysia app, routes, WS
+    db.ts           ← SQLite schema + typed queries
+    loop.ts         ← Phase orchestrator
+    claude.ts       ← Claude CLI subprocess runner
+    prompts.ts      ← Load prompt files
+    agents/
+      developer.ts  ← Direct Claude CLI subprocess (this file)
+client/
+  src/
+    App.tsx
+    components/
+      TopBar.tsx
+      AgentPanel.tsx
+      FeedPanel.tsx
+      InboxPanel.tsx
+\`\`\`
+
+## Key Functions
+
+- \`runDeveloper()\` — spawns Claude CLI with design.md as task input
+- \`runCycle()\` — serial 6-phase orchestrator
+
+## Note
+
+Mock output — set \`CLAUDE_CODE_OAUTH_TOKEN\` to receive a real implementation plan from Claude.`;
+
 export async function runDeveloper(projectId: string, taskDescription: string): Promise<AgentResult> {
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY;
+
+  if (!token) {
+    console.warn("[developer] No CLAUDE_CODE_OAUTH_TOKEN found — using mock output");
+    return { content: MOCK_PLAN, summary: "Mock implementation plan (no auth token available)" };
+  }
+
   const systemPrompt = loadPrompt("developer");
 
   const designArtifact = getArtifactByPhase(projectId, "design");
@@ -36,18 +65,48 @@ export async function runDeveloper(projectId: string, taskDescription: string): 
     designArtifact ? `\n\n## Design Spec:\n${designArtifact.content}` : "",
   ].join("");
 
-  const userPrompt = buildContextBlock(
-    projectId,
-    `${taskDescription}${additionalContext}\n\nProduce build.md: file structure, data shapes, key functions, component breakdown, API contract, and commit plan.\n\n[MVP NOTE: Produce a plan document, not actual code. Real CC integration is TODO.]`
-  );
+  const task = `${taskDescription}${additionalContext}\n\nProduce build.md: file structure, data shapes, key functions, component breakdown, API contract, and commit plan.`;
 
-  const result = await runClaude({ systemPrompt, userPrompt });
-  const content = result.content;
-  const summary = extractSummary(content);
+  const fullPrompt = `${systemPrompt}\n\n${buildContextBlock(projectId, task)}`;
 
-  // Stub: log where real CC integration would go
-  console.log("[developer] TODO: Real Claude Code subprocess would run here");
-  console.log("[developer] Would commit implementation to project git repo and return SHA");
+  try {
+    const proc = Bun.spawn(
+      ["claude", "--print", "--dangerously-skip-permissions"],
+      {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          CLAUDE_CODE_OAUTH_TOKEN: token,
+        },
+      }
+    );
 
-  return { content, summary };
+    proc.stdin.write(fullPrompt);
+    proc.stdin.end();
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    if (exitCode !== 0) {
+      console.warn(`[developer] Claude CLI exited with code ${exitCode}: ${stderr.slice(0, 200)}`);
+      return { content: MOCK_PLAN, summary: "Mock implementation plan (CLI error)" };
+    }
+
+    const content = stdout.trim();
+    if (!content) {
+      console.warn("[developer] Empty response from Claude CLI — using mock output");
+      return { content: MOCK_PLAN, summary: "Mock implementation plan (empty response)" };
+    }
+
+    console.log("[developer] Real Claude CLI response received");
+    return { content, summary: extractSummary(content) };
+  } catch (err) {
+    console.warn("[developer] Failed to spawn Claude CLI:", (err as Error).message);
+    return { content: MOCK_PLAN, summary: "Mock implementation plan (spawn error)" };
+  }
 }

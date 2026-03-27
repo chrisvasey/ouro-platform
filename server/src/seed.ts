@@ -98,6 +98,39 @@ export async function seed(): Promise<void> {
     console.log("[seed] Demo Project already exists, skipping.");
   }
 
+  // Create the Food Delivery App project for testing project-specific spec generation
+  const foodExists = existing.some((p) => p.slug === "food-delivery-app");
+  if (!foodExists) {
+    console.log("[seed] Creating Food Delivery App project...");
+    const food = createProject(
+      "Food Delivery App",
+      "A complex food delivery web app. Customers browse restaurants, build orders, track delivery in real time. Restaurants manage menus and incoming orders. Drivers see a delivery queue. Admins manage the platform."
+    );
+
+    for (const role of AGENT_ROLES) {
+      createAgent(food.id, role);
+    }
+
+    sendInboxMessage(
+      food.id,
+      "pm",
+      "Welcome to Food Delivery App",
+      `Hi,\n\nI'm your Product Manager. The team is assembled and ready to go.\n\nHit "Start Cycle" and we'll run through research, spec, design, build, test, and review phases for the food delivery platform. I'll send you a summary when we're done.\n\n— PM`
+    );
+
+    postFeedMessage(
+      food.id,
+      "pm",
+      "all",
+      "Team assembled for Food Delivery App. Ready for first cycle.",
+      "note"
+    );
+
+    console.log(`[seed] Food Delivery App created (id: ${food.id})`);
+  } else {
+    console.log("[seed] Food Delivery App already exists, skipping.");
+  }
+
   console.log("[seed] Done.");
 }
 

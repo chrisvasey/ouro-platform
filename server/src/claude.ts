@@ -86,325 +86,349 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
 /**
  * Mock output generator — produces plausible-looking agent output so the loop
  * can run end-to-end without a real Claude token in dev/test environments.
+ * Extracts the project name/description from the prompt so each project gets
+ * project-specific mock content instead of always writing about Ouro.
  *
  * TODO: Remove (or gate behind NODE_ENV=test) once real Claude integration is live.
  */
 function mockOutput(userPrompt: string): string {
   const phase = detectPhase(userPrompt);
+  const { name: projectName, description: projectDesc } = extractProjectBrief(userPrompt);
+  const brief = projectDesc ? `${projectName} — ${projectDesc}` : projectName;
 
   const mocks: Record<string, string> = {
-    research: `# Research Report
+    research: `# Research Report: ${projectName}
 
 ## Summary
-Preliminary research for the Ouro platform self-improvement cycle. Ouro is a novel AI-orchestrated agency that uses specialised agents to autonomously build and improve software.
+Preliminary research for **${brief}**.
 
 ## Competitors
 | Name | Description | Relevant |
 |------|-------------|---------|
-| Devin | AI software engineer | Yes — single-agent vs our multi-agent |
-| GPT-Engineer | Code generation from spec | Yes — no feedback loop |
-| SWE-Agent | GitHub issue resolver | Partial |
+| Competitor A | Direct market alternative | Yes — similar core feature set |
+| Competitor B | Adjacent product | Partial — overlapping user base |
+| Competitor C | Emerging player | Watch — growing fast |
 
 ## OSS / Libraries
 | Library | Purpose | Verdict |
 |---------|---------|---------|
-| Elysia | Bun HTTP framework | ✅ Already chosen |
-| bun:sqlite | SQLite driver | ✅ Already chosen |
-| Playwright | E2E testing | ✅ Use for tester agent |
-| Tailwind CSS | UI styling | ✅ Already chosen |
+| React | UI framework | ✅ Recommended |
+| Tailwind CSS | Styling | ✅ Recommended |
+| React Query | Data fetching | ✅ Recommended |
+| Zustand | State management | ✅ Recommended for client state |
 
 ## UI Patterns
-- Dashboard split-panel layout (similar to Linear, Vercel)
-- Real-time feed with websocket updates
-- Inbox pattern for async human-in-the-loop
+- Mobile-first responsive layout
+- Real-time updates via WebSocket
+- Optimistic UI for order/action flows
 
 ## Dev Patterns
-- Monorepo (server + client workspaces)
-- Serial phase loop with agent handoffs
-- Artifact versioning for reproducibility
+- REST API with clear resource boundaries
+- Event-driven updates for live data
+- Role-based access (customer / restaurant / driver / admin)
 
 ## Risks
-1. Claude CLI unavailability in CI — mitigated by mock fallback
-2. Long-running cycles blocking UI — mitigated by streaming feed updates
+1. Real-time delivery tracking latency — mitigated by WebSocket with polling fallback
+2. Concurrent order volume — mitigated by queue-based processing
 
 ## Recommendations
-- Implement WS feed broadcast before cycle runs so UI updates live
-- Version artifacts so previous cycles are auditable
+- Start with customer-facing flows then layer in restaurant and driver views
+- Use optimistic UI for cart operations to feel instant
 `,
 
-    spec: `# Product Specification
+    spec: `# Product Specification: ${projectName}
+
+> **Project brief:** ${brief}
 
 ## User Stories
 
-### US-001: Project Management
-As a client (Chris),
-I want to create and manage projects,
-So that I can track work across multiple software initiatives.
+### US-001: Customer — Browse & Order
+As a customer,
+I want to browse restaurants and build an order,
+So that I can get food delivered to my location.
 
 **Acceptance Criteria:**
-- Can create a project with name and description
-- Project appears in top-bar switcher
-- Project shows current phase
+- Can view a list of restaurants with name, cuisine type, and estimated delivery time
+- Can browse a restaurant menu and add items to cart
+- Can review cart, adjust quantities, and place order
+- Receives real-time status updates as order progresses
 
-### US-002: Real-time Feed
-As a client,
-I want to see a live feed of agent activity,
-So that I can understand what the agents are doing without interrupting them.
-
-**Acceptance Criteria:**
-- Feed updates in real time via WebSocket
-- Each message shows sender, recipient, timestamp, type
-- Feed auto-scrolls to latest message
-
-### US-003: Inbox Communication
-As a client,
-I want to receive and reply to inbox messages from agents,
-So that I can provide input when needed without being constantly interrupted.
+### US-002: Customer — Live Delivery Tracking
+As a customer,
+I want to track my delivery in real time,
+So that I know when my food will arrive.
 
 **Acceptance Criteria:**
-- Unread count badge visible at all times
-- Can expand message to read full body
-- Can reply inline with textarea + send button
+- Order status updates live (Placed → Preparing → Out for Delivery → Delivered)
+- Driver location visible on map once order is picked up
+- Push notification or in-app alert on each status change
 
-### US-004: Cycle Execution
-As a client,
-I want to start a cycle with a single click,
-So that all agents run through their phases automatically.
+### US-003: Restaurant — Menu Management
+As a restaurant owner,
+I want to manage my menu and toggle item availability,
+So that customers only see items I can fulfil.
 
 **Acceptance Criteria:**
-- "Start Cycle" button kicks off the 6-phase loop
-- Each phase updates agent status (thinking → idle)
-- PM sends inbox summary after cycle completes
+- Can add, edit, and remove menu items with name, description, price, and photo
+- Can mark individual items as unavailable without deleting them
+- Changes take effect immediately for new customer sessions
+
+### US-004: Restaurant — Incoming Order Queue
+As a restaurant operator,
+I want to see and manage incoming orders,
+So that I can confirm, prepare, and hand off orders efficiently.
+
+**Acceptance Criteria:**
+- New orders appear in real time with order details and customer notes
+- Can accept or reject an order within a configurable timeout
+- Can mark order as "Ready for Pickup" once prepared
+
+### US-005: Driver — Delivery Queue
+As a driver,
+I want to see available deliveries near me,
+So that I can pick up and deliver orders.
+
+**Acceptance Criteria:**
+- Can see a list of orders ready for pickup sorted by proximity
+- Can accept a delivery and get navigation to the restaurant
+- Can mark order as picked up and then as delivered
+
+### US-006: Admin — Platform Management
+As an admin,
+I want to manage users, restaurants, and platform settings,
+So that I can keep the platform running smoothly.
+
+**Acceptance Criteria:**
+- Can view and manage all users (customers, restaurants, drivers)
+- Can suspend or reactivate accounts
+- Can view platform-wide order metrics and revenue
 `,
 
-    design: `# Design Specification
+    design: `# Design Specification: ${projectName}
+
+> **Project brief:** ${brief}
 
 ## User Flows
 
-### Start a Cycle
-1. User lands on dashboard, sees project switcher in top bar
-2. User selects project from dropdown
-3. User clicks "Start Cycle" button
-4. Button shows "Running..." state
-5. Left panel: active agent status changes to "thinking" (pulsing blue)
-6. Centre panel: feed messages appear as each agent completes
-7. Right panel: inbox message appears after PM phase
+### Customer: Place an Order
+1. Customer opens app, sees restaurant list filtered by location
+2. Selects a restaurant, browses menu
+3. Adds items to cart; cart badge updates
+4. Reviews cart, confirms address, selects payment method
+5. Places order — confirmation screen shown with order ID
+6. Live tracking screen: status bar updates in real time
 
-### Reply to Inbox Message
-1. User sees unread badge on right panel
-2. User clicks message row to expand
-3. Full message body shown
-4. User types reply in textarea
-5. User clicks Send
-6. Message marked as read, reply saved
+### Restaurant: Accept Incoming Order
+1. New order arrives — audio alert + toast notification
+2. Operator reviews order details in the queue panel
+3. Clicks "Accept" — customer notified, timer starts for preparation
+4. Clicks "Ready" when order is bagged — driver notified
+
+### Driver: Pick Up & Deliver
+1. Driver sees available pickup notification
+2. Accepts delivery, gets navigation to restaurant
+3. Marks "Picked Up" on arrival — customer tracking activates
+4. Navigates to customer, marks "Delivered"
 
 ## Component Tree
 \`\`\`
 App
-├── TopBar
-│   ├── ProjectSwitcher (dropdown)
-│   ├── PhaseBadge
-│   └── StartCycleButton
-├── AgentPanel (left)
-│   └── AgentCard[]
-│       ├── RoleIcon (emoji)
-│       ├── StatusBadge
-│       ├── LastActionText
-│       └── CurrentTask
-├── FeedPanel (centre)
-│   └── FeedMessage[]
-│       ├── SenderBadge
-│       ├── RecipientLabel
-│       ├── Timestamp
-│       ├── Content
-│       └── TypeBadge
-└── InboxPanel (right)
-    ├── UnreadBadge
-    └── InboxItem[]
-        ├── SenderLabel
-        ├── Subject
-        ├── Timestamp
-        ├── ExpandedBody (conditional)
-        └── ReplyForm (conditional)
+├── CustomerApp
+│   ├── RestaurantListPage
+│   │   ├── SearchBar
+│   │   ├── FilterChips (cuisine, price, ETA)
+│   │   └── RestaurantCard[]
+│   ├── MenuPage
+│   │   ├── MenuCategoryNav
+│   │   ├── MenuItem[]
+│   │   └── CartSidebar
+│   ├── CheckoutPage
+│   └── TrackingPage
+│       ├── StatusProgressBar
+│       └── MapView
+├── RestaurantApp
+│   ├── OrderQueuePanel
+│   │   └── OrderCard[]
+│   └── MenuManagerPage
+├── DriverApp
+│   ├── AvailableDeliveriesPanel
+│   └── ActiveDeliveryView
+└── AdminApp
+    ├── UserManagementTable
+    └── MetricsDashboard
 \`\`\`
 
 ## Layout Specs
-- Top bar: 48px height, full width, dark background
-- Left panel: 240px fixed width
-- Centre panel: flex-grow
-- Right panel: 320px fixed width
-- Dark theme: bg-gray-950, text-gray-100
+- Mobile-first: 375px base, responsive up to 1440px
+- Customer app: bottom nav on mobile, sidebar on desktop
+- Restaurant/Driver/Admin: desktop-first dashboard layout
+- Colour palette: warm orange primary, white background, dark text
 
 ## Component Specs
 
-### AgentCard
-- Appearance: rounded card, bg-gray-900, border border-gray-800
-- Status badge: idle=gray, thinking=blue (animate-pulse), blocked=amber
-- Shows: role emoji + name, status badge, last action text, current task
+### RestaurantCard
+- Photo thumbnail (16:9), restaurant name, cuisine tags, star rating, ETA badge
+- Hover: subtle elevation shadow
 
-### FeedMessage
-- Appearance: borderless row with subtle divider
-- Sender in coloured chip (role colour)
-- Timestamp: relative ("2m ago")
-- Type badge: note=gray, handoff=blue, question=amber, decision=green, escalate=red
+### OrderCard (Restaurant queue)
+- Order ID, customer name, items summary, total, elapsed time badge
+- CTA buttons: Accept / Reject / Ready — colour coded
 `,
 
-    build: `# Implementation Plan
+    build: `# Implementation Plan: ${projectName}
+
+> **Project brief:** ${brief}
 
 ## File Structure
 \`\`\`
 server/
   src/
-    index.ts        ← Elysia app, routes, WS
-    db.ts           ← SQLite schema + typed queries
-    loop.ts         ← Phase orchestrator
-    claude.ts       ← Claude CLI subprocess runner
-    prompts.ts      ← Load prompt files
-    seed.ts         ← Seed data
-    agents/
-      pm.ts
-      researcher.ts
-      designer.ts
-      developer.ts
-      tester.ts
-      documenter.ts
-  prompts/
-    *.md
+    index.ts          ← Express/Elysia app + routes
+    db.ts             ← Schema + typed queries
+    routes/
+      customers.ts
+      restaurants.ts
+      orders.ts
+      drivers.ts
+      admin.ts
+    services/
+      orderService.ts   ← Order lifecycle state machine
+      trackingService.ts ← Real-time location updates
+    ws/
+      orderEvents.ts    ← WebSocket event broadcasting
 client/
   src/
-    App.tsx
+    apps/
+      CustomerApp.tsx
+      RestaurantApp.tsx
+      DriverApp.tsx
+      AdminApp.tsx
     components/
-      TopBar.tsx
-      AgentPanel.tsx
-      FeedPanel.tsx
-      InboxPanel.tsx
+    hooks/
+    store/
 \`\`\`
 
-## Key Functions
-
-### loop.ts
-- \`runCycle(projectId)\` — iterates phases, calls each agent, saves artifacts, posts feed
-- \`phaseToRole\` map: research→researcher, spec→pm, design→designer, build→developer, test→tester, review→documenter
-
-### agents/*.ts
-Each agent exports \`runAgent(projectId, task)\`:
-1. Load system prompt from prompts.ts
-2. Build context block (project info, CLAUDE.md, last 10 feed messages)
-3. Call runClaude()
-4. Return { content, summary }
-
-### index.ts
-WebSocket: on new feed_message, broadcast to all connected clients
-
-## Conventional Commits Plan
-- feat(db): add schema and typed queries
-- feat(claude): add CLI subprocess runner with mock fallback
-- feat(agents): add all 6 agent implementations
-- feat(loop): add serial phase orchestrator
-- feat(api): add all REST + WS routes
-- feat(client): add three-panel React dashboard
-- feat(seed): add seed data script
-
-## TODO: Real Claude Code Integration
+## Key Data Shapes
 \`\`\`typescript
-// TODO: Developer agent — real CC subprocess
-// const proc = Bun.spawn(['claude', '--print', ...], { cwd: projectWorkdir })
-// Parse file diffs from output and commit to project git repo
+interface Order {
+  id: string;
+  customerId: string;
+  restaurantId: string;
+  driverId: string | null;
+  items: OrderItem[];
+  status: "placed" | "confirmed" | "preparing" | "ready" | "in_transit" | "delivered";
+  total: number;
+  createdAt: number;
+}
 \`\`\`
 
-## TODO: Real Playwright Integration
-\`\`\`typescript
-// TODO: Tester agent — real Playwright run
-// const { chromium } = await import('playwright')
-// const browser = await chromium.launch()
-// Run test suite against built app, capture screenshots
-\`\`\`
+## API Contract
+- \`POST /api/orders\` — place order
+- \`PATCH /api/orders/:id/status\` — update order status (restaurant/driver/system)
+- \`GET /api/restaurants\` — list restaurants with menu counts
+- \`WS /ws/orders/:id\` — live order status stream
+
+## Commit Plan
+- feat(db): orders, restaurants, drivers schema
+- feat(orders): order placement and state machine
+- feat(ws): real-time order status broadcasting
+- feat(client/customer): browse, cart, checkout, tracking
+- feat(client/restaurant): order queue, menu management
+- feat(client/driver): delivery queue and active delivery
 `,
 
-    test: `# Test Report
+    test: `# Test Report: ${projectName}
 
-## Cycle: 2024-01 — Ouro Platform MVP
+> **Project brief:** ${brief}
 
-### US-001: Project Management
-
-| Test | Status | Notes |
-|------|--------|-------|
-| Create project via POST /api/projects | ✅ PASS | Returns project with id + slug |
-| Project appears in GET /api/projects | ✅ PASS | |
-| Project switcher updates on creation | ✅ PASS | WS broadcast triggers re-fetch |
-
-### US-002: Real-time Feed
+### US-001: Customer — Browse & Order
 
 | Test | Status | Notes |
 |------|--------|-------|
-| WS /ws connects | ✅ PASS | |
-| New feed message triggers WS broadcast | ✅ PASS | |
-| Feed auto-scrolls to bottom | ✅ PASS | |
+| Customer can view restaurant list | ✅ PASS | |
+| Customer can add items to cart | ✅ PASS | |
+| Customer can place an order | ✅ PASS | Returns order ID |
+| Customer receives order confirmation | ✅ PASS | |
 
-### US-003: Inbox
-
-| Test | Status | Notes |
-|------|--------|-------|
-| POST /api/projects/:id/inbox/:msgId/reply saves reply | ✅ PASS | |
-| Reply marks message as read | ✅ PASS | |
-| Unread badge decrements | ⚠️ FAIL | Badge doesn't update until page refresh — see GH#1 |
-
-### US-004: Cycle Execution
+### US-002: Customer — Live Delivery Tracking
 
 | Test | Status | Notes |
 |------|--------|-------|
-| POST /cycle/start kicks off loop | ✅ PASS | |
-| All 6 phases run serially | ✅ PASS | |
-| PM sends inbox message after cycle | ✅ PASS | |
-| Agent status shown as 'thinking' during run | ✅ PASS | |
+| Order status updates in real time via WS | ✅ PASS | |
+| Status bar reflects each stage | ✅ PASS | |
+| Driver location visible once in transit | ⚠️ FAIL | Map integration stub only — see GH#1 |
+
+### US-003: Restaurant — Menu Management
+
+| Test | Status | Notes |
+|------|--------|-------|
+| Can add a menu item | ✅ PASS | |
+| Can mark item unavailable | ✅ PASS | |
+| Unavailable items hidden from customers | ✅ PASS | |
+
+### US-004: Restaurant — Incoming Order Queue
+
+| Test | Status | Notes |
+|------|--------|-------|
+| New order appears in queue in real time | ✅ PASS | |
+| Accept/reject updates order status | ✅ PASS | |
+| Ready action notifies driver queue | ✅ PASS | |
+
+### US-005: Driver — Delivery Queue
+
+| Test | Status | Notes |
+|------|--------|-------|
+| Driver sees orders ready for pickup | ✅ PASS | |
+| Accept delivery locks it to driver | ✅ PASS | |
+| Mark delivered completes order lifecycle | ✅ PASS | |
 
 ## Raised Issues
 
-### GH#1: Unread badge doesn't update in real time
-**Severity:** Medium
-**Steps:** Send inbox message while client is connected → badge doesn't update
-**Expected:** Badge increments immediately via WS
-**Fix:** Broadcast inbox events over WS alongside feed events
-
-> NOTE: This is a notional GitHub issue — real GH integration is TODO.
-> [stub] Would run: gh issue create --title "Unread badge doesn't update in real time" --body "..."
+### GH#1: Map integration not implemented
+**Severity:** High
+**Fix:** Integrate a maps SDK (e.g. Mapbox or Google Maps) for driver location tracking
 `,
 
-    review: `# Cycle Review & CLAUDE.md Update
+    review: `# Cycle Review: ${projectName}
+
+> **Project brief:** ${brief}
 
 ## Summary
 
-Cycle 1 complete. All 6 phases ran successfully. The Ouro MVP loop is functional:
-research → spec → design → build → test → review.
+Cycle 1 complete. All 6 phases ran for **${projectName}**. Core flows are specced, designed, and planned.
 
 ## Decisions Made This Cycle
-- Stack: Bun + Elysia + SQLite + React + Vite + Tailwind
-- Architecture: monorepo (server workspace + client workspace)
-- Agent model: serial phases, each agent reads previous artifacts
-- Real-time: WebSocket broadcast on new feed_message
-- Auth: none for MVP — single user (Chris)
+- Architecture: separate app views per role (customer / restaurant / driver / admin)
+- Real-time: WebSocket for order status and driver location
+- State machine: order lifecycle modelled as explicit status enum
 
 ## Patterns Established
-- Context block format injected into every agent prompt
-- Artifact versioning: each cycle increments version number
-- Mock fallback: if Claude CLI unavailable, deterministic mock output returned
-- Feed message types: handoff | question | decision | note | escalate
-
-## Client Preferences Noted
-- Dark theme
-- Concise feed messages — agents should summarise, not dump full output
-- Inbox only for things that genuinely need human input
+- Role-based routing at the app entry point
+- Optimistic UI for cart and order placement
+- WS event naming: \`order:status_changed\`, \`order:driver_assigned\`
 
 ## Next Cycle Priorities
-1. Real Claude Code subprocess for developer agent
-2. Real Playwright runs for tester agent
-3. GitHub Issues integration for tester failures
-4. WS broadcast for inbox events (fix GH#1)
-5. Streaming output from Claude (SSE) so feed populates token-by-token
+1. Implement map SDK integration for driver tracking (GH#1)
+2. Add payment provider integration (Stripe)
+3. Build push notification system for order updates
+4. Implement restaurant onboarding flow
 `,
   };
 
-  return mocks[phase] ?? `# Agent Output\n\nTask completed successfully.\n\nPhase: ${phase}\n\nThis is mock output. Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN to use real Claude.`;
+  return mocks[phase] ?? `# Agent Output\n\nTask completed for **${projectName}**.\n\nPhase: ${phase}\n\nThis is mock output. Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN to use real Claude.`;
+}
+
+/**
+ * Extract project name and description from the context block injected into
+ * every agent prompt by buildContextBlock().
+ */
+function extractProjectBrief(prompt: string): { name: string; description: string } {
+  const nameMatch = prompt.match(/^Project:\s*(.+)$/m);
+  const descMatch = prompt.match(/^Description:\s*(.+)$/m);
+  return {
+    name: nameMatch ? nameMatch[1].trim() : "Unknown Project",
+    description: descMatch ? descMatch[1].trim() : "",
+  };
 }
 
 function detectPhase(prompt: string): string {

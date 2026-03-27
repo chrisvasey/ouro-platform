@@ -55,15 +55,19 @@ const phaseToFilename: Record<string, string> = {
   review: "review.md",
 };
 
-// Map from phase name → task description sent to the agent
-const phaseToTask: Record<string, string> = {
-  research: "Research the project landscape: find competitors, relevant OSS libraries, UI patterns, and development patterns. Produce research.md.",
-  spec: "Write user stories for the project with acceptance criteria. Produce spec.md.",
-  design: "Read the user stories and research. Produce design.md with user flows, component tree, layout specs, component specs, and edge cases.",
-  build: "Read the design spec. Produce build.md: a detailed implementation plan with file structure, key functions, data shapes, component breakdown, API contract, and commit plan.",
-  test: "Read the user stories and implementation plan. Write test-report.md: test results per acceptance criterion, PASS/FAIL ratings, and any raised issues.",
-  review: "Review all artifacts from this cycle. Update CLAUDE.md with decisions made, patterns established, and client preferences. Produce review.md summarising the cycle.",
-};
+/** Build a project-specific task description for the given phase */
+function getPhaseTask(phase: string, project: { name: string; description: string | null }): string {
+  const brief = `${project.name}${project.description ? ` — ${project.description}` : ""}`;
+  const tasks: Record<string, string> = {
+    research: `Research the following product and identify competitors, patterns, and recommendations: ${brief}`,
+    spec: `Write user stories and acceptance criteria for the following product: ${brief}. Reference the research artifact for context.`,
+    design: `Create a design spec for: ${brief}. Reference user stories and research.`,
+    build: "Read the design spec. Produce build.md: a detailed implementation plan with file structure, key functions, data shapes, component breakdown, API contract, and commit plan.",
+    test: "Read the user stories and implementation plan. Write test-report.md: test results per acceptance criterion, PASS/FAIL ratings, and any raised issues.",
+    review: "Review all artifacts from this cycle. Update CLAUDE.md with decisions made, patterns established, and client preferences. Produce review.md summarising the cycle.",
+  };
+  return tasks[phase] ?? `Complete the ${phase} phase for: ${brief}`;
+}
 
 /** Global state for currently running cycles (projectId → running) */
 const runningCycles = new Set<string>();
@@ -101,7 +105,7 @@ export async function runCycle(projectId: string): Promise<void> {
     for (const phase of phases) {
       const role = phaseToRole[phase];
       const filename = phaseToFilename[phase];
-      const taskDescription = phaseToTask[phase];
+      const taskDescription = getPhaseTask(phase, project);
 
       // Update project phase
       setProjectPhase(projectId, phase);

@@ -34,6 +34,7 @@ export function buildContextBlock(projectId: string, taskDescription: string): s
 
   return `--- PROJECT CONTEXT ---
 Project: ${project.name}
+Description: ${project.description ?? "(No description provided)"}
 Phase: ${project.current_phase ?? "not set"}
 
 CLAUDE.md:

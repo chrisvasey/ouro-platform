@@ -1,0 +1,415 @@
+import { Database } from "bun:sqlite";
+import { join } from "path";
+
+const DB_PATH = process.env.DATABASE_URL ?? join(import.meta.dir, "../../ouro.db");
+
+export const db = new Database(DB_PATH, { create: true });
+
+// Enable WAL mode for better concurrent read performance
+db.run("PRAGMA journal_mode = WAL");
+db.run("PRAGMA foreign_keys = ON");
+
+// ─── Schema ──────────────────────────────────────────────────────────────────
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS projects (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    slug        TEXT UNIQUE,
+    description TEXT,
+    status      TEXT DEFAULT 'active',
+    current_phase TEXT,
+    created_at  INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS agents (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT,
+    role          TEXT,
+    status        TEXT DEFAULT 'idle',
+    current_task  TEXT,
+    last_action_at INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS feed_messages (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT,
+    sender_role  TEXT,
+    recipient    TEXT,
+    content      TEXT,
+    message_type TEXT,
+    created_at   INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS inbox_messages (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT,
+    sender_role TEXT,
+    subject     TEXT,
+    body        TEXT,
+    is_read     INTEGER DEFAULT 0,
+    replied_at  INTEGER,
+    reply_body  TEXT,
+    created_at  INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS tasks (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT,
+    assigned_to  TEXT,
+    title        TEXT,
+    description  TEXT,
+    status       TEXT DEFAULT 'pending',
+    priority     INTEGER DEFAULT 50,
+    created_at   INTEGER,
+    completed_at INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS artifacts (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT,
+    phase      TEXT,
+    filename   TEXT,
+    content    TEXT,
+    version    INTEGER DEFAULT 1,
+    created_at INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS preferences (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT,
+    key        TEXT,
+    value      TEXT,
+    created_at INTEGER
+  )
+`);
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function newId(): string {
+  return crypto.randomUUID();
+}
+
+function now(): number {
+  return Date.now();
+}
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+export interface Project {
+  id: string;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  status: string;
+  current_phase: string | null;
+  created_at: number;
+}
+
+export function createProject(name: string, description?: string): Project {
+  const id = newId();
+  const slug = slugify(name);
+  const project = { id, name, slug, description: description ?? null, status: "active", current_phase: null, created_at: now() };
+  db.run(
+    `INSERT INTO projects (id, name, slug, description, status, current_phase, created_at)
+     VALUES (?, ?, ?, ?, 'active', NULL, ?)`,
+    [id, name, slug, description ?? null, now()]
+  );
+  return project;
+}
+
+export function getProject(id: string): Project | null {
+  return db.query<Project, [string]>("SELECT * FROM projects WHERE id = ?").get(id);
+}
+
+export function listProjects(): Project[] {
+  return db.query<Project, []>("SELECT * FROM projects ORDER BY created_at DESC").all();
+}
+
+export function setProjectPhase(projectId: string, phase: string): void {
+  db.run("UPDATE projects SET current_phase = ? WHERE id = ?", [phase, projectId]);
+}
+
+export function setProjectStatus(projectId: string, status: string): void {
+  db.run("UPDATE projects SET status = ? WHERE id = ?", [status, projectId]);
+}
+
+// ─── Agents ──────────────────────────────────────────────────────────────────
+
+export interface Agent {
+  id: string;
+  project_id: string;
+  role: string;
+  status: string;
+  current_task: string | null;
+  last_action_at: number | null;
+}
+
+export const AGENT_ROLES = ["pm", "researcher", "designer", "developer", "tester", "documenter"] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
+export function createAgent(projectId: string, role: AgentRole): Agent {
+  const id = newId();
+  db.run(
+    `INSERT INTO agents (id, project_id, role, status, current_task, last_action_at)
+     VALUES (?, ?, ?, 'idle', NULL, NULL)`,
+    [id, projectId, role]
+  );
+  return { id, project_id: projectId, role, status: "idle", current_task: null, last_action_at: null };
+}
+
+export function getAgentsForProject(projectId: string): Agent[] {
+  return db.query<Agent, [string]>("SELECT * FROM agents WHERE project_id = ?").all(projectId);
+}
+
+export function setAgentStatus(projectId: string, role: string, status: string, currentTask?: string): void {
+  db.run(
+    "UPDATE agents SET status = ?, current_task = ?, last_action_at = ? WHERE project_id = ? AND role = ?",
+    [status, currentTask ?? null, now(), projectId, role]
+  );
+}
+
+// ─── Feed messages ───────────────────────────────────────────────────────────
+
+export interface FeedMessage {
+  id: string;
+  project_id: string;
+  sender_role: string;
+  recipient: string;
+  content: string;
+  message_type: string;
+  created_at: number;
+}
+
+export function postFeedMessage(
+  projectId: string,
+  senderRole: string,
+  recipient: string,
+  content: string,
+  messageType: string
+): FeedMessage {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO feed_messages (id, project_id, sender_role, recipient, content, message_type, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, projectId, senderRole, recipient, content, messageType, ts]
+  );
+  return { id, project_id: projectId, sender_role: senderRole, recipient, content, message_type: messageType, created_at: ts };
+}
+
+export function getFeedMessages(projectId: string, limit = 50): FeedMessage[] {
+  return db
+    .query<FeedMessage, [string, number]>(
+      "SELECT * FROM feed_messages WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
+    )
+    .all(projectId, limit);
+}
+
+// ─── Inbox messages ──────────────────────────────────────────────────────────
+
+export interface InboxMessage {
+  id: string;
+  project_id: string;
+  sender_role: string;
+  subject: string;
+  body: string;
+  is_read: number;
+  replied_at: number | null;
+  reply_body: string | null;
+  created_at: number;
+}
+
+export function sendInboxMessage(
+  projectId: string,
+  senderRole: string,
+  subject: string,
+  body: string
+): InboxMessage {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO inbox_messages (id, project_id, sender_role, subject, body, is_read, replied_at, reply_body, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?)`,
+    [id, projectId, senderRole, subject, body, ts]
+  );
+  return { id, project_id: projectId, sender_role: senderRole, subject, body, is_read: 0, replied_at: null, reply_body: null, created_at: ts };
+}
+
+export function getInboxMessages(projectId: string): InboxMessage[] {
+  return db
+    .query<InboxMessage, [string]>(
+      "SELECT * FROM inbox_messages WHERE project_id = ? ORDER BY created_at DESC"
+    )
+    .all(projectId);
+}
+
+export function replyToInboxMessage(msgId: string, replyBody: string): void {
+  db.run(
+    "UPDATE inbox_messages SET reply_body = ?, replied_at = ?, is_read = 1 WHERE id = ?",
+    [replyBody, now(), msgId]
+  );
+}
+
+export function markInboxRead(msgId: string): void {
+  db.run("UPDATE inbox_messages SET is_read = 1 WHERE id = ?", [msgId]);
+}
+
+// ─── Tasks ───────────────────────────────────────────────────────────────────
+
+export interface Task {
+  id: string;
+  project_id: string;
+  assigned_to: string;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: number;
+  created_at: number;
+  completed_at: number | null;
+}
+
+export function createTask(
+  projectId: string,
+  assignedTo: string,
+  title: string,
+  description?: string,
+  priority = 50
+): Task {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO tasks (id, project_id, assigned_to, title, description, status, priority, created_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, NULL)`,
+    [id, projectId, assignedTo, title, description ?? null, priority, ts]
+  );
+  return { id, project_id: projectId, assigned_to: assignedTo, title, description: description ?? null, status: "pending", priority, created_at: ts, completed_at: null };
+}
+
+export function getTasksForProject(projectId: string): Task[] {
+  return db.query<Task, [string]>("SELECT * FROM tasks WHERE project_id = ? ORDER BY priority DESC, created_at ASC").all(projectId);
+}
+
+// ─── Artifacts ───────────────────────────────────────────────────────────────
+
+export interface Artifact {
+  id: string;
+  project_id: string;
+  phase: string;
+  filename: string;
+  content: string;
+  version: number;
+  created_at: number;
+}
+
+export function saveArtifact(
+  projectId: string,
+  phase: string,
+  filename: string,
+  content: string
+): Artifact {
+  // Increment version if artifact already exists
+  const existing = db
+    .query<{ version: number }, [string, string, string]>(
+      "SELECT version FROM artifacts WHERE project_id = ? AND phase = ? AND filename = ? ORDER BY version DESC LIMIT 1"
+    )
+    .get(projectId, phase, filename);
+
+  const version = existing ? existing.version + 1 : 1;
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO artifacts (id, project_id, phase, filename, content, version, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, projectId, phase, filename, content, version, ts]
+  );
+  return { id, project_id: projectId, phase, filename, content, version, created_at: ts };
+}
+
+export function listArtifacts(projectId: string): Artifact[] {
+  // Latest version of each artifact only
+  return db
+    .query<Artifact, [string]>(
+      `SELECT a.* FROM artifacts a
+       INNER JOIN (
+         SELECT project_id, filename, MAX(version) as max_version
+         FROM artifacts WHERE project_id = ?
+         GROUP BY project_id, filename
+       ) latest ON a.project_id = latest.project_id AND a.filename = latest.filename AND a.version = latest.max_version
+       ORDER BY a.phase, a.filename`
+    )
+    .all(projectId);
+}
+
+export function getArtifactByPhase(projectId: string, phase: string): Artifact | null {
+  return db
+    .query<Artifact, [string, string]>(
+      "SELECT * FROM artifacts WHERE project_id = ? AND phase = ? ORDER BY version DESC LIMIT 1"
+    )
+    .get(projectId, phase);
+}
+
+export function getArtifactByFilename(projectId: string, filename: string): Artifact | null {
+  return db
+    .query<Artifact, [string, string]>(
+      "SELECT * FROM artifacts WHERE project_id = ? AND filename = ? ORDER BY version DESC LIMIT 1"
+    )
+    .get(projectId, filename);
+}
+
+// ─── Preferences ─────────────────────────────────────────────────────────────
+
+export function setPreference(projectId: string, key: string, value: string): void {
+  const existing = db
+    .query<{ id: string }, [string, string]>("SELECT id FROM preferences WHERE project_id = ? AND key = ?")
+    .get(projectId, key);
+  if (existing) {
+    db.run("UPDATE preferences SET value = ? WHERE id = ?", [value, existing.id]);
+  } else {
+    db.run(
+      "INSERT INTO preferences (id, project_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+      [newId(), projectId, key, value, now()]
+    );
+  }
+}
+
+export function getPreference(projectId: string, key: string): string | null {
+  const row = db
+    .query<{ value: string }, [string, string]>("SELECT value FROM preferences WHERE project_id = ? AND key = ?")
+    .get(projectId, key);
+  return row?.value ?? null;
+}
+
+// ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
+
+if (import.meta.main) {
+  const args = Bun.argv.slice(2);
+  if (args.includes("--reset")) {
+    console.log("Dropping and recreating database...");
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences"];
+    for (const table of tables) {
+      db.run(`DROP TABLE IF EXISTS ${table}`);
+    }
+    console.log("Tables dropped. Re-run to recreate.");
+    process.exit(0);
+  }
+}

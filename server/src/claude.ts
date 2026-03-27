@@ -408,12 +408,23 @@ research → spec → design → build → test → review.
 }
 
 function detectPhase(prompt: string): string {
-  const lower = prompt.toLowerCase();
+  // Extract the "Phase:" line from the context block — this is the most reliable signal.
+  // Scanning the full prompt is unreliable because feed messages from earlier phases
+  // contain phase-related keywords that pollute detection.
+  const phaseMatch = prompt.match(/^Phase:\s*(\w+)/m);
+  if (phaseMatch) {
+    const p = phaseMatch[1].toLowerCase();
+    if (["research", "spec", "design", "build", "test", "review"].includes(p)) return p;
+  }
+
+  // Fallback: scan just the TASK section (after the context block ends)
+  const taskSection = prompt.split("TASK:").pop() ?? prompt;
+  const lower = taskSection.toLowerCase();
   if (lower.includes("research")) return "research";
-  if (lower.includes("spec") || lower.includes("user stor")) return "spec";
-  if (lower.includes("design")) return "design";
-  if (lower.includes("build") || lower.includes("implement") || lower.includes("develop")) return "build";
-  if (lower.includes("test")) return "test";
-  if (lower.includes("review") || lower.includes("document") || lower.includes("claude.md")) return "review";
+  if (lower.includes("user stor") || lower.includes("acceptance criteria")) return "spec";
+  if (lower.includes("design") || lower.includes("user flow")) return "design";
+  if (lower.includes("implement") || lower.includes("file structure")) return "build";
+  if (lower.includes("test report") || lower.includes("playwright")) return "test";
+  if (lower.includes("claude.md") || lower.includes("decisions made")) return "review";
   return "research";
 }

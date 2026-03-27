@@ -1,0 +1,13 @@
+{
+  "name": "ouro-platform",
+  "version": "0.1.0",
+  "description": "Ouro — a self-improving AI software agency",
+  "private": true,
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "bun run server/src/index.ts",
+    "dev:client": "cd client && bun run dev",
+    "db:reset": "bun run server/src/db.ts --reset",
+    "seed": "bun run server/src/seed.ts"
+  }
+}

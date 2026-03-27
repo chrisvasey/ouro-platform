@@ -1,6 +1,8 @@
 import type { Agent, Artifact, FeedMessage, InboxMessage, Project } from "./types";
 
-const BASE = "/api";
+// In production (base: '/ouro/'), BASE_URL is '/ouro/' → BASE becomes '/ouro/api'.
+// In dev (base: '/'),            BASE_URL is '/'       → BASE becomes '/api'.
+const BASE = `${import.meta.env.BASE_URL}api`;
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);

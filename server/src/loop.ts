@@ -24,6 +24,9 @@ import {
   saveArtifact,
   postFeedMessage,
   sendInboxMessage,
+  createCycleRecord,
+  updateCycleRecord,
+  type PhaseOutcome,
 } from "./db.js";
 
 import { runResearcher } from "./agents/researcher.js";
@@ -68,6 +71,9 @@ const phaseToTask: Record<string, string> = {
 /** Global state for currently running cycles (projectId → running) */
 const runningCycles = new Set<string>();
 
+/** Project IDs that have been requested to stop after the current phase */
+const stoppingCycles = new Set<string>();
+
 /** Event emitter for broadcasting real-time updates */
 type BroadcastFn = (projectId: string, event: string, data: unknown) => void;
 let broadcast: BroadcastFn = () => {};
@@ -81,8 +87,19 @@ export function isCycleRunning(projectId: string): boolean {
 }
 
 /**
+ * Request a graceful stop of a running cycle.
+ * The cycle will finish its current phase and then halt.
+ * Returns false if no cycle is running for the project.
+ */
+export function stopCycle(projectId: string): boolean {
+  if (!runningCycles.has(projectId)) return false;
+  stoppingCycles.add(projectId);
+  return true;
+}
+
+/**
  * Run one full cycle for a project.
- * Resolves when all phases complete. Rejects if any phase throws.
+ * Resolves when all phases complete or the cycle is stopped. Rejects if setup throws.
  */
 export async function runCycle(projectId: string): Promise<void> {
   if (runningCycles.has(projectId)) {
@@ -94,14 +111,28 @@ export async function runCycle(projectId: string): Promise<void> {
 
   runningCycles.add(projectId);
 
+  // Create a cycle history record
+  const cycleRecord = createCycleRecord(projectId);
+  const phaseOutcomes: PhaseOutcome[] = [];
+
   try {
     const phases = ["research", "spec", "design", "build", "test", "review"] as const;
     let lastResult: AgentResult | null = null;
+    let stopped = false;
 
     for (const phase of phases) {
+      // Check for stop request before starting the next phase
+      if (stoppingCycles.has(projectId)) {
+        stoppingCycles.delete(projectId);
+        stopped = true;
+        console.log(`[loop] [${project.name}] Stop requested — halting after current phase.`);
+        break;
+      }
+
       const role = phaseToRole[phase];
       const filename = phaseToFilename[phase];
       const taskDescription = phaseToTask[phase];
+      const phaseStartedAt = Date.now();
 
       // Update project phase
       setProjectPhase(projectId, phase);
@@ -114,6 +145,7 @@ export async function runCycle(projectId: string): Promise<void> {
       console.log(`[loop] [${project.name}] Phase: ${phase} → ${role} thinking...`);
 
       // Run the agent
+      let phaseStatus: PhaseOutcome["status"] = "complete";
       try {
         const result = await runAgent(phase, projectId, taskDescription);
         lastResult = result;
@@ -134,6 +166,7 @@ export async function runCycle(projectId: string): Promise<void> {
         console.log(`[loop] [${project.name}] Phase ${phase} complete.`);
       } catch (err) {
         // Agent threw — mark as blocked, post to feed, continue
+        phaseStatus = "error";
         console.error(`[loop] [${project.name}] Phase ${phase} failed:`, err);
         setAgentStatus(projectId, role, "blocked", `Error in ${phase} phase`);
         broadcast(projectId, "agent_status", { role, status: "blocked" });
@@ -148,31 +181,72 @@ export async function runCycle(projectId: string): Promise<void> {
         broadcast(projectId, "feed_message", feedMsg);
       }
 
+      // Record phase outcome
+      phaseOutcomes.push({
+        phase,
+        status: phaseStatus,
+        started_at: phaseStartedAt,
+        ended_at: Date.now(),
+      });
+
+      // Persist intermediate progress after each phase
+      updateCycleRecord(cycleRecord.id, "running", phaseOutcomes);
+
       // Set agent back to idle
       setAgentStatus(projectId, role, "idle");
       broadcast(projectId, "agent_status", { role, status: "idle", current_task: null });
     }
 
-    // Cycle complete — PM sends inbox summary
-    const cycleSummary = lastResult
-      ? lastResult.summary
-      : "Cycle complete. All phases ran. Check the feed for details.";
+    if (stopped) {
+      // Cycle was stopped by request
+      updateCycleRecord(cycleRecord.id, "stopped", phaseOutcomes, Date.now());
 
-    const inboxMsg = sendInboxMessage(
-      projectId,
-      "pm",
-      "Cycle complete",
-      `All 6 phases completed for project "${project.name}".\n\n${cycleSummary}\n\nCheck the feed for full details of each phase. Artifacts saved: research.md, spec.md, design.md, build.md, test-report.md, review.md (CLAUDE.md).`
-    );
-    broadcast(projectId, "inbox_message", inboxMsg);
+      setProjectPhase(projectId, "complete");
+      broadcast(projectId, "phase_change", { phase: "complete" });
 
-    // Mark project as back to active (not in a phase)
-    setProjectPhase(projectId, "complete");
-    broadcast(projectId, "phase_change", { phase: "complete" });
+      const feedMsg = postFeedMessage(
+        projectId,
+        "pm",
+        "all",
+        `[CYCLE STOPPED] Cycle was stopped after ${phaseOutcomes.length} phase(s). Completed phases: ${phaseOutcomes.map((p) => p.phase).join(", ") || "none"}.`,
+        "note"
+      );
+      broadcast(projectId, "feed_message", feedMsg);
 
-    console.log(`[loop] [${project.name}] Cycle complete.`);
+      broadcast(projectId, "cycle_update", { cycleId: cycleRecord.id, status: "stopped" });
+
+      console.log(`[loop] [${project.name}] Cycle stopped.`);
+    } else {
+      // All phases completed
+      const cycleSummary = lastResult
+        ? lastResult.summary
+        : "Cycle complete. All phases ran. Check the feed for details.";
+
+      const inboxMsg = sendInboxMessage(
+        projectId,
+        "pm",
+        "Cycle complete",
+        `All 6 phases completed for project "${project.name}".\n\n${cycleSummary}\n\nCheck the feed for full details of each phase. Artifacts saved: research.md, spec.md, design.md, build.md, test-report.md, review.md (CLAUDE.md).`
+      );
+      broadcast(projectId, "inbox_message", inboxMsg);
+
+      // Mark project as back to active (not in a phase)
+      setProjectPhase(projectId, "complete");
+      broadcast(projectId, "phase_change", { phase: "complete" });
+
+      updateCycleRecord(cycleRecord.id, "complete", phaseOutcomes, Date.now());
+      broadcast(projectId, "cycle_update", { cycleId: cycleRecord.id, status: "complete" });
+
+      console.log(`[loop] [${project.name}] Cycle complete.`);
+    }
+  } catch (err) {
+    // Unexpected top-level error
+    updateCycleRecord(cycleRecord.id, "error", phaseOutcomes, Date.now());
+    broadcast(projectId, "cycle_update", { cycleId: cycleRecord.id, status: "error" });
+    throw err;
   } finally {
     runningCycles.delete(projectId);
+    stoppingCycles.delete(projectId);
   }
 }
 

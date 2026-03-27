@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
-import type { FeedMessage } from "../types";
+import { useEffect, useRef, useState } from "react";
+import type { CycleRun, FeedMessage, PhaseOutcome } from "../types";
 import { relativeTime } from "../utils";
 
 interface FeedPanelProps {
   messages: FeedMessage[];
+  cycleHistory: CycleRun[];
 }
 
 const ROLE_EMOJI: Record<string, string> = {
@@ -32,8 +33,30 @@ const TYPE_COLOUR: Record<string, string> = {
   escalate: "bg-red-900/60 text-red-400",
 };
 
-export function FeedPanel({ messages }: FeedPanelProps) {
+const CYCLE_STATUS_STYLE: Record<string, { dot: string; label: string }> = {
+  running:  { dot: "bg-blue-400 animate-pulse", label: "text-blue-400" },
+  complete: { dot: "bg-green-500",              label: "text-green-400" },
+  stopped:  { dot: "bg-yellow-500",             label: "text-yellow-400" },
+  error:    { dot: "bg-red-500",                label: "text-red-400" },
+};
+
+const PHASE_OUTCOME_STYLE: Record<string, string> = {
+  complete: "text-green-400",
+  error:    "text-red-400",
+  stopped:  "text-yellow-400",
+};
+
+const PHASE_OUTCOME_ICON: Record<string, string> = {
+  complete: "✓",
+  error:    "✗",
+  stopped:  "■",
+};
+
+const ALL_PHASES = ["research", "spec", "design", "build", "test", "review"];
+
+export function FeedPanel({ messages, cycleHistory }: FeedPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -63,6 +86,36 @@ export function FeedPanel({ messages }: FeedPanelProps) {
 
         <div ref={bottomRef} />
       </div>
+
+      {/* Collapsible cycle history */}
+      <div className="flex-shrink-0 border-t border-gray-800">
+        <button
+          onClick={() => setHistoryOpen((v) => !v)}
+          className="w-full px-4 py-2.5 flex items-center gap-2 hover:bg-gray-900 transition-colors text-left"
+        >
+          <span className="text-xs text-gray-600 transition-transform duration-150" style={{ display: "inline-block", transform: historyOpen ? "rotate(90deg)" : "rotate(0deg)" }}>
+            ▶
+          </span>
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            Cycle History
+          </span>
+          {cycleHistory.length > 0 && (
+            <span className="text-xs text-gray-600 ml-1">({cycleHistory.length})</span>
+          )}
+        </button>
+
+        {historyOpen && (
+          <div className="max-h-64 overflow-y-auto border-t border-gray-800/60">
+            {cycleHistory.length === 0 ? (
+              <div className="px-4 py-3 text-xs text-gray-600">No cycles run yet.</div>
+            ) : (
+              cycleHistory.map((cycle, idx) => (
+                <CycleHistoryRow key={cycle.id} cycle={cycle} number={cycleHistory.length - idx} />
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </main>
   );
 }
@@ -88,6 +141,57 @@ function FeedMessageRow({ msg, isLast }: { msg: FeedMessage; isLast: boolean }) 
       <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
         {msg.content}
       </p>
+    </div>
+  );
+}
+
+function CycleHistoryRow({ cycle, number }: { cycle: CycleRun; number: number }) {
+  const style = CYCLE_STATUS_STYLE[cycle.status] ?? CYCLE_STATUS_STYLE.error;
+
+  // Build a phase grid: one cell per phase, showing outcome or pending
+  const outcomeMap = new Map<string, PhaseOutcome>(
+    cycle.phase_outcomes.map((o) => [o.phase, o])
+  );
+
+  const durationMs = cycle.ended_at ? cycle.ended_at - cycle.started_at : null;
+  const durationStr = durationMs !== null
+    ? durationMs < 60_000
+      ? `${Math.round(durationMs / 1000)}s`
+      : `${Math.round(durationMs / 60_000)}m`
+    : null;
+
+  return (
+    <div className="px-4 py-2.5 border-b border-gray-800/50 last:border-0">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-xs text-gray-500 font-medium">#{number}</span>
+        <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`} />
+        <span className={`text-xs font-medium ${style.label}`}>{cycle.status}</span>
+        <span className="text-xs text-gray-700 ml-auto">{relativeTime(cycle.started_at)}</span>
+        {durationStr && (
+          <span className="text-xs text-gray-700">{durationStr}</span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1 flex-wrap">
+        {ALL_PHASES.map((phase) => {
+          const outcome = outcomeMap.get(phase);
+          if (!outcome) {
+            // Not reached
+            return (
+              <span key={phase} className="text-xs text-gray-700 px-1.5 py-0.5 rounded bg-gray-800/40">
+                {phase}
+              </span>
+            );
+          }
+          const icon = PHASE_OUTCOME_ICON[outcome.status] ?? "?";
+          const cls = PHASE_OUTCOME_STYLE[outcome.status] ?? "text-gray-500";
+          return (
+            <span key={phase} className={`text-xs px-1.5 py-0.5 rounded bg-gray-800/60 ${cls}`} title={outcome.status}>
+              {phase} {icon}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { Agent, Artifact, FeedMessage, InboxMessage, Project } from "./types";
+import type { Agent, Artifact, CycleRun, FeedMessage, InboxMessage, Project } from "./types";
 
 const BASE = "/api";
 
@@ -48,6 +48,10 @@ export const api = {
   cycle: {
     start: (projectId: string) =>
       post<{ ok: boolean; message: string }>(`/projects/${projectId}/cycle/start`),
+    stop: (projectId: string) =>
+      post<{ ok: boolean; message: string }>(`/projects/${projectId}/cycle/stop`),
+    history: (projectId: string) =>
+      get<CycleRun[]>(`/projects/${projectId}/cycles`),
   },
   seed: () => post<{ ok: boolean; message: string }>("/seed"),
 };

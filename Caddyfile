@@ -1,0 +1,51 @@
+# Ouro Platform — Caddy reverse proxy + static file server
+#
+# Serves Ouro at https://lucial.noodlefish-carat.ts.net/ouro/
+#
+# Prerequisites:
+#   1. Tailscale running and authenticated on this machine
+#   2. Ouro server running on localhost:3001 (`bun run dev` in repo root)
+#   3. React client built (`cd client && bun run build`) — see README.md
+#
+# Deploy:
+#   sudo cp /path/to/ouro-platform/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Or if merging with an existing Caddyfile, paste the site block below
+# into your existing /etc/caddy/Caddyfile.
+
+lucial.noodlefish-carat.ts.net {
+    # TLS: Caddy will attempt to obtain a certificate automatically.
+    # For Tailscale-only machines (no public port 80/443), use instead:
+    #   tls internal
+    # or provision a cert with `tailscale cert lucial.noodlefish-carat.ts.net`
+    # and reference it:
+    #   tls /etc/caddy/lucial.noodlefish-carat.ts.net.crt \
+    #       /etc/caddy/lucial.noodlefish-carat.ts.net.key
+
+    # ── Ouro API ─────────────────────────────────────────────────────────────
+    # Strip /ouro prefix before proxying so the backend sees /api/...
+    handle /ouro/api/* {
+        uri strip_prefix /ouro
+        reverse_proxy localhost:3001
+    }
+
+    # ── Ouro WebSocket ───────────────────────────────────────────────────────
+    # Strip /ouro prefix so the backend sees /ws
+    handle /ouro/ws {
+        uri strip_prefix /ouro
+        reverse_proxy localhost:3001
+    }
+
+    # ── Ouro static frontend ─────────────────────────────────────────────────
+    # Adjust the path below to wherever you cloned the repo on this server.
+    handle /ouro/* {
+        root * /opt/ouro-platform/client/dist
+        uri strip_prefix /ouro
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Redirect bare /ouro → /ouro/ (trailing slash required for correct routing)
+    redir /ouro /ouro/ 308
+}

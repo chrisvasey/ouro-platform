@@ -6,7 +6,8 @@ import { AgentPanel } from "./components/AgentPanel";
 import { FeedPanel } from "./components/FeedPanel";
 import { InboxPanel } from "./components/InboxPanel";
 
-const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
+// BASE_URL is '/ouro/' in production and '/' in dev (set by vite base option).
+const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${import.meta.env.BASE_URL}ws`;
 
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);

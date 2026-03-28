@@ -16,7 +16,7 @@ import { getProject } from "../db.js";
 import { buildContextBlock, extractSummary, type AgentResult } from "./base.js";
 
 /** Per-step timeout: 150 seconds — web search is slower than build tasks. */
-const STEP_TIMEOUT_MS = 150_000;
+const STEP_TIMEOUT_MS = 210_000;
 
 /**
  * Run a single Claude micro-call with one automatic retry on timeout.

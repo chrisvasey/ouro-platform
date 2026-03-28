@@ -150,11 +150,6 @@ export async function runResearcher(
     researchMd ||
     "# Research Report\n\n(Researcher agent timed out on all steps — see server logs for details.)";
 
-<<<<<<< HEAD
-  const result = await runClaude({ systemPrompt, userPrompt, timeoutMs: 90_000 });
-  const content = result.content;
-=======
->>>>>>> origin/main
   const summary = extractSummary(content);
 
   return { content, summary };

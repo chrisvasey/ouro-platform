@@ -16,7 +16,7 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getProject, getArtifactByPhase, postFeedMessage } from "../db.js";
-import { buildContextBlock, extractSummary, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:3007";
 const SCREENSHOT_DIR = "/tmp";
@@ -44,16 +44,20 @@ type CriterionType = "visibility" | "navigation" | "form" | "list" | "skip";
 function parseUserStories(text: string): UserStory[] {
   const stories: UserStory[] = [];
 
-  // Split on user story headings: ### US-001: ... or ## US-1: ...
-  const blocks = text.split(/(?=###?\s+US-\d+[:\s])/i);
+  // Split on user story headings: ### US-001: ... or ## US-1: ... or **Story N — or Story N:
+  const storyHeadingRe = /(?=(?:###?\s+US-\d+|\*{1,2}Story\s+\d+|^##?\s+Story\s+\d+)[:\s—*])/im;
+  const blocks = text.split(storyHeadingRe);
 
   for (const block of blocks) {
-    const idMatch = block.match(/US-(\d+)/i);
+    // Match US-NNN or Story N style IDs
+    const idMatch = block.match(/US-(\d+)/i) ?? block.match(/Story\s+(\d+)/i);
     if (!idMatch) continue;
 
-    const id = `US-${idMatch[1].padStart(3, "0")}`;
-    const titleMatch = block.match(/US-\d+[:\s]+([^\n]+)/i);
-    const title = titleMatch ? titleMatch[1].trim().replace(/\*+/g, "") : id;
+    const num = idMatch[1].padStart(3, "0");
+    const id = block.match(/US-\d+/i) ? `US-${num}` : `Story-${num}`;
+    // Title: grab everything after the ID/dash up to end of line
+    const titleMatch = block.match(/(?:US-\d+|Story\s+\d+)[:\s—*]+([^\n]+)/i);
+    const title = titleMatch ? titleMatch[1].trim().replace(/[*`]/g, "").replace(/^—\s*/, "") : id;
 
     const criteria: string[] = [];
     let inAC = false; // inside an "Acceptance Criteria:" section
@@ -505,62 +509,75 @@ Overall status: ${overallStatus}
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-export async function runTester(projectId: string, taskDescription: string): Promise<AgentResult> {
-  const timestamp = Date.now();
+export async function runTester(projectId: string, taskDescription: string, cycleId?: string): Promise<AgentResult> {
+  const meta = { projectId, cycleId, agentRole: "tester" };
+  emitAgentStarted(meta, taskDescription);
 
-  const specArtifact = getArtifactByPhase(projectId, "spec");
-  const buildArtifact = getArtifactByPhase(projectId, "build");
+  try {
+    const timestamp = Date.now();
 
-  // Combine all available text for story parsing
-  const allText = [
-    taskDescription,
-    specArtifact?.content ?? "",
-    buildArtifact?.content ?? "",
-  ].join("\n\n");
+    const specArtifact = getArtifactByPhase(projectId, "spec");
+    const buildArtifact = getArtifactByPhase(projectId, "build");
 
-  const stories = parseUserStories(allText);
-  const totalCriteria = stories.reduce((n, s) => n + s.criteria.length, 0);
-  console.log(`[tester] Parsed ${stories.length} stories, ${totalCriteria} criteria`);
+    // Combine all available text for story parsing
+    const allText = [
+      taskDescription,
+      specArtifact?.content ?? "",
+      buildArtifact?.content ?? "",
+    ].join("\n\n");
 
-  const project = getProject(projectId);
-  const projectName = project?.name ?? projectId;
+    const stories = parseUserStories(allText);
+    const totalCriteria = stories.reduce((n, s) => n + s.criteria.length, 0);
+    console.log(`[tester] Parsed ${stories.length} stories, ${totalCriteria} criteria`);
 
-  let content: string;
-  let playwrightAvailable = false;
+    const project = getProject(projectId);
+    const projectName = project?.name ?? projectId;
 
-  if (stories.length === 0) {
-    // No structured stories — fall back to Claude-generated report
-    console.log("[tester] No structured stories found; delegating to Claude");
-    const systemPrompt = loadPrompt("tester");
-    const additionalContext = [
-      specArtifact ? `\n\n## User Stories:\n${specArtifact.content}` : "",
-      buildArtifact ? `\n\n## Implementation Plan:\n${buildArtifact.content}` : "",
-    ].join("");
-    const userPrompt = buildContextBlock(
+    let content: string;
+    let playwrightAvailable = false;
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    if (stories.length === 0) {
+      // No structured stories — fall back to Claude-generated report
+      console.log("[tester] No structured stories found; delegating to Claude");
+      const systemPrompt = loadPrompt("tester");
+      const additionalContext = [
+        specArtifact ? `\n\n## User Stories:\n${specArtifact.content}` : "",
+        buildArtifact ? `\n\n## Implementation Plan:\n${buildArtifact.content}` : "",
+      ].join("");
+      const userPrompt = buildContextBlock(
+        projectId,
+        `${taskDescription}${additionalContext}\n\nProduce test-report.md with test results per story and any raised issues.`
+      );
+      const result = await runClaude({ systemPrompt, userPrompt });
+      content = result.content;
+      inputTokens = result.inputTokens ?? 0;
+      outputTokens = result.outputTokens ?? 0;
+    } else {
+      const { storyResults, playwrightAvailable: pw } = await runPlaywrightTests(stories, timestamp);
+      playwrightAvailable = pw;
+      content = buildReport(projectName, stories, storyResults, playwrightAvailable, timestamp);
+    }
+
+    const summary = extractSummary(content);
+    const failCount = (content.match(/❌ FAIL/g) ?? []).length;
+    const passCount = (content.match(/✅ PASS/g) ?? []).length;
+
+    postFeedMessage(
       projectId,
-      `${taskDescription}${additionalContext}\n\nProduce test-report.md with test results per story and any raised issues.`
+      "tester",
+      "all",
+      playwrightAvailable
+        ? `Playwright tests complete: ${passCount} passed, ${failCount} failed.${failCount > 0 ? " Screenshots saved for failures." : " All checks passed."}`
+        : `Playwright unavailable (Chromium not installed). Mock report generated for ${stories.length} stories / ${totalCriteria} criteria.`,
+      "note"
     );
-    const result = await runClaude({ systemPrompt, userPrompt });
-    content = result.content;
-  } else {
-    const { storyResults, playwrightAvailable: pw } = await runPlaywrightTests(stories, timestamp);
-    playwrightAvailable = pw;
-    content = buildReport(projectName, stories, storyResults, playwrightAvailable, timestamp);
+
+    emitAgentCompleted(meta, { inputTokens, outputTokens });
+    return { content, summary };
+  } catch (err) {
+    emitAgentFailed(meta, err as Error);
+    throw err;
   }
-
-  const summary = extractSummary(content);
-  const failCount = (content.match(/❌ FAIL/g) ?? []).length;
-  const passCount = (content.match(/✅ PASS/g) ?? []).length;
-
-  postFeedMessage(
-    projectId,
-    "tester",
-    "all",
-    playwrightAvailable
-      ? `Playwright tests complete: ${passCount} passed, ${failCount} failed.${failCount > 0 ? " Screenshots saved for failures." : " All checks passed."}`
-      : `Playwright unavailable (Chromium not installed). Mock report generated for ${stories.length} stories / ${totalCriteria} criteria.`,
-    "note"
-  );
-
-  return { content, summary };
 }

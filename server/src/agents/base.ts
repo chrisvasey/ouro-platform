@@ -5,13 +5,52 @@
  * project context injected at the start of every prompt.
  */
 
-import { getProject, getArtifactByFilename, getFeedMessages } from "../db.js";
+import { getProject, getArtifactByFilename, getFeedMessages, insertEvent } from "../db.js";
 
 export interface AgentResult {
   /** Full markdown content to save as artifact */
   content: string;
   /** Short summary (1–3 sentences) to post to the feed */
   summary: string;
+}
+
+export interface AgentEventMeta {
+  projectId: string;
+  cycleId?: string;
+  agentRole: string;
+}
+
+export function emitAgentStarted(meta: AgentEventMeta, task: string): void {
+  insertEvent({
+    projectId: meta.projectId,
+    cycleId: meta.cycleId,
+    type: "agent_started",
+    agentRole: meta.agentRole,
+    payload: { task },
+  });
+}
+
+export function emitAgentCompleted(
+  meta: AgentEventMeta,
+  tokens: { inputTokens: number; outputTokens: number }
+): void {
+  insertEvent({
+    projectId: meta.projectId,
+    cycleId: meta.cycleId,
+    type: "agent_completed",
+    agentRole: meta.agentRole,
+    payload: { inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens },
+  });
+}
+
+export function emitAgentFailed(meta: AgentEventMeta, err: Error): void {
+  insertEvent({
+    projectId: meta.projectId,
+    cycleId: meta.cycleId,
+    type: "agent_failed",
+    agentRole: meta.agentRole,
+    payload: { error: err.message },
+  });
 }
 
 /**

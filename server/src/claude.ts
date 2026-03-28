@@ -1,14 +1,20 @@
 /**
- * claude.ts — Claude CLI subprocess runner
+ * claude.ts — Anthropic SDK message runner
  *
- * Calls the `claude` CLI as a subprocess, passing the prompt and returning the
- * text response. Uses CLAUDE_CODE_OAUTH_TOKEN for auth (same pattern as
- * agent-runner).
+ * Calls the Anthropic Messages API via the official SDK rather than spawning
+ * the `claude` CLI subprocess.  Auth is resolved in this order:
+ *   1. ANTHROPIC_API_KEY env var  (preferred)
+ *   2. CLAUDE_CODE_OAUTH_TOKEN env var (fallback)
  *
- * TODO: For real Claude Code (developer agent), spawn a separate CC process
- *       with a working directory per project and capture file diffs rather
- *       than raw text output.
+ * If neither is set, or if the API returns a 401 AuthenticationError, a
+ * deterministic mock response is returned so the loop can keep running in
+ * dev/test environments without a real key.
+ *
+ * Extended thinking is opt-in via `thinkingBudget`.  It is mutually exclusive
+ * with `tools` — if both are supplied, thinking is silently dropped.
  */
+
+import Anthropic from "@anthropic-ai/sdk";
 
 export interface ClaudeRunOptions {
   systemPrompt: string;
@@ -16,74 +22,104 @@ export interface ClaudeRunOptions {
   /** Max tokens to request. Defaults to 4096. */
   maxTokens?: number;
   /**
-   * Per-call timeout in milliseconds. If the Claude subprocess does not
-   * respond within this window, runClaude rejects with an error whose
-   * `.timeout` property is `true`. Callers can catch and retry.
+   * Per-call timeout in milliseconds. If the API call does not respond within
+   * this window, runClaude rejects with an error whose `.timeout` property is
+   * `true`. Callers can catch and retry.
    * Defaults to no timeout.
    */
   timeoutMs?: number;
+  /** Optional tool definitions forwarded to `messages.create()`. */
+  tools?: Anthropic.Tool[];
+  /**
+   * Enable extended thinking with this token budget.
+   * Mutually exclusive with `tools` — thinking is dropped when both are set.
+   */
+  thinkingBudget?: number;
 }
 
 export interface ClaudeRunResult {
   content: string;
   /** True if we got real output from Claude; false if we used the mock fallback. */
   real: boolean;
+  /** Input tokens consumed (from API usage). */
+  inputTokens?: number;
+  /** Output tokens consumed (from API usage). */
+  outputTokens?: number;
+  /** Concatenated thinking-block text (only present when extended thinking was used). */
+  thinkingContent?: string;
 }
 
+const MODEL = "claude-sonnet-4-6";
+const DEFAULT_MAX_TOKENS = 4096;
+
 /**
- * Run a one-shot Claude query via the CLI subprocess.
+ * Run a one-shot Claude query via the Anthropic SDK.
  *
- * The subprocess receives the full prompt over stdin and the response is read
- * from stdout.  If the CLI is unavailable (not installed, no token, etc.) we
- * fall back to a deterministic mock so the loop can keep running in dev.
+ * Auth order: ANTHROPIC_API_KEY → CLAUDE_CODE_OAUTH_TOKEN.
+ * On AuthenticationError (401) or missing key → deterministic mock.
+ * Timeout enforced via Promise.race against a setTimeout.
  */
 export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult> {
-  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
-  if (!token) {
+  if (!apiKey) {
     console.warn("[claude] No auth token found — using mock output");
     return { content: mockOutput(opts.userPrompt), real: false };
   }
 
-  const fullPrompt = `${opts.systemPrompt}\n\n${opts.userPrompt}`;
-
   const execute = async (): Promise<ClaudeRunResult> => {
-    // Attempt to call the claude CLI with --print (non-interactive, single response)
-    const proc = Bun.spawn(
-      ["claude", "--print", "--dangerously-skip-permissions"],
-      {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          CLAUDE_CODE_OAUTH_TOKEN: token,
-        },
+    const client = new Anthropic({ apiKey });
+
+    // Thinking and tools are mutually exclusive; drop thinking when tools are set
+    const useThinking = !!opts.thinkingBudget && !opts.tools;
+
+    let response: Anthropic.Message;
+
+    if (useThinking) {
+      // Extended thinking — requires the interleaved-thinking beta header
+      response = await (client.beta.messages.create as Function)({
+        model: MODEL,
+        max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+        system: opts.systemPrompt,
+        messages: [{ role: "user", content: opts.userPrompt }],
+        thinking: { type: "enabled", budget_tokens: opts.thinkingBudget },
+        betas: ["interleaved-thinking-2025-05-14"],
+      });
+    } else {
+      const params: Anthropic.MessageCreateParamsNonStreaming = {
+        model: MODEL,
+        max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+        system: opts.systemPrompt,
+        messages: [{ role: "user", content: opts.userPrompt }],
+      };
+      if (opts.tools) params.tools = opts.tools;
+      response = await client.messages.create(params);
+    }
+
+    // Extract text and (optional) thinking blocks from the response
+    let content = "";
+    let thinkingContent: string | undefined;
+
+    for (const block of response.content) {
+      if (block.type === "text") {
+        content += block.text;
+      } else if (block.type === "thinking") {
+        thinkingContent = (thinkingContent ?? "") + (block as { thinking: string }).thinking;
       }
-    );
-
-    // Write prompt to stdin and close
-    proc.stdin.write(fullPrompt);
-    proc.stdin.end();
-
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-
-    if (exitCode !== 0) {
-      console.warn(`[claude] CLI exited with code ${exitCode}: ${stderr.slice(0, 200)}`);
-      return { content: mockOutput(opts.userPrompt), real: false };
     }
 
-    const content = stdout.trim();
     if (!content) {
-      console.warn("[claude] Empty response from CLI — using mock output");
+      console.warn("[claude] Empty response from API — using mock output");
       return { content: mockOutput(opts.userPrompt), real: false };
     }
 
-    return { content, real: true };
+    return {
+      content: content.trim(),
+      real: true,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      thinkingContent,
+    };
   };
 
   try {
@@ -101,7 +137,12 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
   } catch (err) {
     // Re-throw timeout errors so callers can detect and retry
     if ((err as { timeout?: boolean }).timeout) throw err;
-    console.warn("[claude] Failed to spawn CLI:", (err as Error).message);
+    // Authentication failure — log and fall back to mock
+    if (err instanceof Anthropic.AuthenticationError) {
+      console.warn("[claude] Authentication error (401) — using mock output");
+      return { content: mockOutput(opts.userPrompt), real: false };
+    }
+    console.warn("[claude] API call failed:", (err as Error).message);
     return { content: mockOutput(opts.userPrompt), real: false };
   }
 }
@@ -109,8 +150,6 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
 /**
  * Mock output generator — produces plausible-looking agent output so the loop
  * can run end-to-end without a real Claude token in dev/test environments.
- *
- * TODO: Remove (or gate behind NODE_ENV=test) once real Claude integration is live.
  */
 function mockOutput(userPrompt: string): string {
   const phase = detectPhase(userPrompt);
@@ -281,7 +320,7 @@ server/
     index.ts        ← Elysia app, routes, WS
     db.ts           ← SQLite schema + typed queries
     loop.ts         ← Phase orchestrator
-    claude.ts       ← Claude CLI subprocess runner
+    claude.ts       ← Anthropic SDK runner
     prompts.ts      ← Load prompt files
     seed.ts         ← Seed data
     agents/
@@ -321,27 +360,12 @@ WebSocket: on new feed_message, broadcast to all connected clients
 
 ## Conventional Commits Plan
 - feat(db): add schema and typed queries
-- feat(claude): add CLI subprocess runner with mock fallback
+- feat(claude): add SDK runner with mock fallback
 - feat(agents): add all 6 agent implementations
 - feat(loop): add serial phase orchestrator
 - feat(api): add all REST + WS routes
 - feat(client): add three-panel React dashboard
 - feat(seed): add seed data script
-
-## TODO: Real Claude Code Integration
-\`\`\`typescript
-// TODO: Developer agent — real CC subprocess
-// const proc = Bun.spawn(['claude', '--print', ...], { cwd: projectWorkdir })
-// Parse file diffs from output and commit to project git repo
-\`\`\`
-
-## TODO: Real Playwright Integration
-\`\`\`typescript
-// TODO: Tester agent — real Playwright run
-// const { chromium } = await import('playwright')
-// const browser = await chromium.launch()
-// Run test suite against built app, capture screenshots
-\`\`\`
 `,
 
     test: `# Test Report
@@ -410,7 +434,7 @@ research → spec → design → build → test → review.
 ## Patterns Established
 - Context block format injected into every agent prompt
 - Artifact versioning: each cycle increments version number
-- Mock fallback: if Claude CLI unavailable, deterministic mock output returned
+- Mock fallback: if Claude API unavailable, deterministic mock output returned
 - Feed message types: handoff | question | decision | note | escalate
 
 ## Client Preferences Noted

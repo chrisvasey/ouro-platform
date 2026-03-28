@@ -37,6 +37,7 @@ import {
   getArtifactByPhase,
   createCycleRecord,
   updateCycleRecord,
+  insertEvent,
   type PhaseOutcome,
 } from "./db.js";
 
@@ -190,6 +191,8 @@ export async function runCycle(projectId: string): Promise<void> {
     const taskDescription = getPhaseTask(phase, project);
     const phaseStartedAt = Date.now();
 
+    insertEvent({ projectId, cycleId: cycleRecord.id, type: "phase_started", agentRole: role, payload: { phase, role } });
+
     setProjectPhase(projectId, phase);
     broadcast(projectId, "phase_change", { phase });
 
@@ -205,10 +208,10 @@ export async function runCycle(projectId: string): Promise<void> {
         const feedMsg = postFeedMessage(projectId, role, "all", message, "note");
         broadcast(projectId, "feed_message", feedMsg);
       };
-      const result = await runAgentWithTimeout(phase, projectId, taskDescription, onFeed);
+      const result = await runAgentWithTimeout(phase, projectId, taskDescription, onFeed, cycleRecord.id);
       lastResult = result;
 
-      saveArtifact(projectId, phase, filename, result.content);
+      await saveArtifact(projectId, phase, filename, result.content, cycleRecord.id);
 
       const feedMsg = postFeedMessage(
         projectId,
@@ -218,11 +221,14 @@ export async function runCycle(projectId: string): Promise<void> {
         "handoff"
       );
       broadcast(projectId, "feed_message", feedMsg);
+      insertEvent({ projectId, cycleId: cycleRecord.id, type: "phase_completed", agentRole: role, payload: { phase, role, artifact_filename: filename } });
 
       console.log(`[loop] [${project.name}] Phase ${phase} complete.`);
     } catch (err) {
       phaseStatus = "error";
       console.error(`[loop] [${project.name}] Phase ${phase} failed:`, err);
+
+      insertEvent({ projectId, cycleId: cycleRecord.id, type: "error", agentRole: role, payload: { phase, role, error: (err as Error).message } });
 
       setAgentStatus(projectId, role, "blocked", `Error in ${phase} phase`);
       broadcast(projectId, "agent_status", { role, status: "blocked" });
@@ -303,6 +309,7 @@ export async function runCycle(projectId: string): Promise<void> {
             `Tests have failed after 3 retry attempts.\n\nLatest test report:\n\n${content.slice(0, 1000)}`
           );
           broadcast(projectId, "inbox_message", escalateInboxMsg);
+          insertEvent({ projectId, cycleId: cycleRecord.id, type: "human_input_requested", payload: { inbox_message_id: escalateInboxMsg.id } });
           break;
         }
 
@@ -398,7 +405,8 @@ async function runAgentWithTimeout(
   phase: string,
   projectId: string,
   taskDescription: string,
-  onFeed?: (message: string) => void
+  onFeed?: (message: string) => void,
+  cycleId?: string
 ): Promise<AgentResult> {
   const phaseTimeout = getPhaseTimeout(phase);
   const makeTimeoutPromise = () =>
@@ -415,7 +423,7 @@ async function runAgentWithTimeout(
   // First attempt
   try {
     return await Promise.race([
-      runAgent(phase, projectId, taskDescription, onFeed),
+      runAgent(phase, projectId, taskDescription, onFeed, cycleId),
       makeTimeoutPromise(),
     ]);
   } catch (firstErr) {
@@ -434,7 +442,7 @@ async function runAgentWithTimeout(
     // Second attempt
     try {
       return await Promise.race([
-        runAgent(phase, projectId, taskDescription, onFeed),
+        runAgent(phase, projectId, taskDescription, onFeed, cycleId),
         makeTimeoutPromise(),
       ]);
     } catch (secondErr) {
@@ -451,11 +459,12 @@ async function runAgentWithTimeout(
       broadcast(projectId, "feed_message", failMsg);
 
       const filename = phaseToFilename[phase] ?? `${phase}.md`;
-      saveArtifact(
+      await saveArtifact(
         projectId,
         phase,
         filename,
-        `# Phase Error\n\noverall status: FAIL\n\nPhase \`${phase}\` timed out after two attempts (${PHASE_TIMEOUT_MS / 1000}s each).`
+        `# Phase Error\n\noverall status: FAIL\n\nPhase \`${phase}\` timed out after two attempts (${phaseTimeout / 1000}s each).`,
+        cycleId
       );
 
       throw secondErr;
@@ -468,21 +477,22 @@ async function runAgent(
   phase: string,
   projectId: string,
   taskDescription: string,
-  onFeed?: (message: string) => void
+  onFeed?: (message: string) => void,
+  cycleId?: string
 ): Promise<AgentResult> {
   switch (phase) {
     case "research":
-      return runResearcher(projectId, taskDescription, onFeed);
+      return runResearcher(projectId, taskDescription, onFeed, cycleId);
     case "spec":
-      return runPM(projectId, taskDescription);
+      return runPM(projectId, taskDescription, cycleId);
     case "design":
-      return runDesigner(projectId, taskDescription);
+      return runDesigner(projectId, taskDescription, onFeed, cycleId);
     case "build":
-      return runDeveloper(projectId, taskDescription, onFeed);
+      return runDeveloper(projectId, taskDescription, onFeed, cycleId);
     case "test":
-      return runTester(projectId, taskDescription);
+      return runTester(projectId, taskDescription, cycleId);
     case "review":
-      return runDocumenter(projectId, taskDescription);
+      return runDocumenter(projectId, taskDescription, cycleId);
     default:
       throw new Error(`Unknown phase: ${phase}`);
   }

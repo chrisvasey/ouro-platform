@@ -22,6 +22,7 @@ import {
   postFeedMessage,
   setPreference,
   listCycles,
+  insertEvent,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
@@ -145,6 +146,7 @@ const app = new Elysia()
       // ── Persist reply + intent JSON ─────────────────────────────────────────
       replyToInboxMessage(params.msgId, body.body, JSON.stringify(intent));
       markInboxRead(params.msgId);
+      insertEvent({ projectId: params.id, type: "human_input_received", payload: { inbox_message_id: params.msgId, intent_type: intent.type } });
 
       const updatedMessages = getInboxMessages(params.id);
       const msg = updatedMessages.find((m) => m.id === params.msgId);

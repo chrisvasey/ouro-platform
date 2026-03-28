@@ -68,6 +68,11 @@ try {
   // Column already exists — ignore
 }
 
+// Artifact versioning columns (Cycle 8)
+try { db.run("ALTER TABLE artifacts ADD COLUMN cycle_id TEXT"); } catch { /* already exists */ }
+try { db.run("ALTER TABLE artifacts ADD COLUMN previous_version_id TEXT"); } catch { /* already exists */ }
+try { db.run("ALTER TABLE artifacts ADD COLUMN diff_from_previous TEXT"); } catch { /* already exists */ }
+
 db.run(`
   CREATE TABLE IF NOT EXISTS tasks (
     id           TEXT PRIMARY KEY,
@@ -114,6 +119,22 @@ db.run(`
     phase_outcomes TEXT DEFAULT '[]'
   )
 `);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS events (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    cycle_id   TEXT,
+    type       TEXT NOT NULL,
+    agent_role TEXT,
+    payload    TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+  )
+`);
+
+try { db.run("CREATE INDEX IF NOT EXISTS idx_events_project_id ON events (project_id)"); } catch { /* already exists */ }
+try { db.run("CREATE INDEX IF NOT EXISTS idx_events_cycle_id ON events (cycle_id)"); } catch { /* already exists */ }
+try { db.run("CREATE INDEX IF NOT EXISTS idx_events_type ON events (type)"); } catch { /* already exists */ }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -339,30 +360,72 @@ export interface Artifact {
   content: string;
   version: number;
   created_at: number;
+  cycle_id: string | null;
+  previous_version_id: string | null;
+  diff_from_previous: string | null;
 }
 
-export function saveArtifact(
+export async function saveArtifact(
   projectId: string,
   phase: string,
   filename: string,
-  content: string
-): Artifact {
+  content: string,
+  cycleId?: string
+): Promise<Artifact> {
   // Increment version if artifact already exists
   const existing = db
-    .query<{ version: number }, [string, string, string]>(
-      "SELECT version FROM artifacts WHERE project_id = ? AND phase = ? AND filename = ? ORDER BY version DESC LIMIT 1"
+    .query<{ version: number; id: string; content: string }, [string, string, string]>(
+      "SELECT version, id, content FROM artifacts WHERE project_id = ? AND phase = ? AND filename = ? ORDER BY version DESC LIMIT 1"
     )
     .get(projectId, phase, filename);
 
   const version = existing ? existing.version + 1 : 1;
   const id = newId();
   const ts = now();
+  const cycle_id = cycleId ?? null;
+
+  let previous_version_id: string | null = null;
+  let diff_from_previous: string | null = null;
+
+  if (version > 1 && existing) {
+    previous_version_id = existing.id;
+
+    // Generate unified diff between previous and current content
+    const tmpA = `/tmp/ouro-diff-a-${id}`;
+    const tmpB = `/tmp/ouro-diff-b-${id}`;
+    try {
+      await Bun.write(tmpA, existing.content);
+      await Bun.write(tmpB, content);
+
+      const diffProc = Bun.spawn(["diff", "-u", tmpA, tmpB], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [diffOut, exitCode] = await Promise.all([
+        new Response(diffProc.stdout).text(),
+        diffProc.exited,
+      ]);
+
+      // diff exits 0 = identical, 1 = differ, ≥2 = error
+      if (exitCode <= 1) {
+        diff_from_previous = diffOut || null;
+      } else {
+        console.warn(`[db] diff exited ${exitCode} for ${filename} — skipping diff`);
+      }
+    } catch (err) {
+      console.warn("[db] diff generation failed:", (err as Error).message);
+    } finally {
+      try { await Bun.file(tmpA).exists() && Bun.spawn(["rm", "-f", tmpA]); } catch { /* ignore */ }
+      try { await Bun.file(tmpB).exists() && Bun.spawn(["rm", "-f", tmpB]); } catch { /* ignore */ }
+    }
+  }
+
   db.run(
-    `INSERT INTO artifacts (id, project_id, phase, filename, content, version, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, projectId, phase, filename, content, version, ts]
+    `INSERT INTO artifacts (id, project_id, phase, filename, content, version, created_at, cycle_id, previous_version_id, diff_from_previous)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, projectId, phase, filename, content, version, ts, cycle_id, previous_version_id, diff_from_previous]
   );
-  return { id, project_id: projectId, phase, filename, content, version, created_at: ts };
+  return { id, project_id: projectId, phase, filename, content, version, created_at: ts, cycle_id, previous_version_id, diff_from_previous };
 }
 
 export function listArtifacts(projectId: string): Artifact[] {
@@ -394,6 +457,14 @@ export function getArtifactByFilename(projectId: string, filename: string): Arti
       "SELECT * FROM artifacts WHERE project_id = ? AND filename = ? ORDER BY version DESC LIMIT 1"
     )
     .get(projectId, filename);
+}
+
+export function getArtifactHistory(projectId: string, phase: string, filename: string): Artifact[] {
+  return db
+    .query<Artifact, [string, string, string]>(
+      "SELECT * FROM artifacts WHERE project_id = ? AND phase = ? AND filename = ? ORDER BY version ASC"
+    )
+    .all(projectId, phase, filename);
 }
 
 // ─── Preferences ─────────────────────────────────────────────────────────────
@@ -486,13 +557,91 @@ export function listCycles(projectId: string): CycleRun[] {
   return rows.map(parseCycleRow);
 }
 
+// ─── Events ──────────────────────────────────────────────────────────────────
+
+export type EventType =
+  | "phase_started"
+  | "phase_completed"
+  | "agent_started"
+  | "agent_completed"
+  | "agent_failed"
+  | "error"
+  | "human_input_requested"
+  | "human_input_received";
+
+export interface InsertEventParams {
+  projectId: string;
+  cycleId?: string;
+  type: EventType;
+  agentRole?: string;
+  payload: Record<string, unknown>;
+}
+
+export interface Event {
+  id: string;
+  project_id: string;
+  cycle_id: string | null;
+  type: EventType;
+  agent_role: string | null;
+  payload: Record<string, unknown>;
+  created_at: number;
+}
+
+interface DbEvent {
+  id: string;
+  project_id: string;
+  cycle_id: string | null;
+  type: string;
+  agent_role: string | null;
+  payload: string;
+  created_at: number;
+}
+
+function parseEventRow(row: DbEvent): Event {
+  return {
+    ...row,
+    type: row.type as EventType,
+    payload: JSON.parse(row.payload) as Record<string, unknown>,
+  };
+}
+
+export function insertEvent(params: InsertEventParams): Event {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO events (id, project_id, cycle_id, type, agent_role, payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, params.projectId, params.cycleId ?? null, params.type, params.agentRole ?? null, JSON.stringify(params.payload), ts]
+  );
+  return {
+    id,
+    project_id: params.projectId,
+    cycle_id: params.cycleId ?? null,
+    type: params.type,
+    agent_role: params.agentRole ?? null,
+    payload: params.payload,
+    created_at: ts,
+  };
+}
+
+export function getEvents(projectId: string, cycleId?: string): Event[] {
+  const rows = cycleId
+    ? db.query<DbEvent, [string, string]>(
+        "SELECT * FROM events WHERE project_id = ? AND cycle_id = ? ORDER BY created_at ASC"
+      ).all(projectId, cycleId)
+    : db.query<DbEvent, [string]>(
+        "SELECT * FROM events WHERE project_id = ? ORDER BY created_at ASC"
+      ).all(projectId);
+  return rows.map(parseEventRow);
+}
+
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
 
 if (import.meta.main) {
   const args = Bun.argv.slice(2);
   if (args.includes("--reset")) {
     console.log("Dropping and recreating database...");
-    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles"];
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles", "events"];
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`);
     }

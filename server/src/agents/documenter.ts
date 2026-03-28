@@ -7,29 +7,38 @@
 
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
-import { getArtifactByPhase, listArtifacts, saveArtifact } from "../db.js";
-import { buildContextBlock, extractSummary, type AgentResult } from "./base.js";
+import { listArtifacts, saveArtifact } from "../db.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
 
-export async function runDocumenter(projectId: string, taskDescription: string): Promise<AgentResult> {
-  const systemPrompt = loadPrompt("documenter");
+export async function runDocumenter(projectId: string, taskDescription: string, cycleId?: string): Promise<AgentResult> {
+  const meta = { projectId, cycleId, agentRole: "documenter" };
+  emitAgentStarted(meta, taskDescription);
 
-  // Give the Documenter all artifacts from this cycle
-  const artifacts = listArtifacts(projectId);
-  const artifactsSummary = artifacts
-    .map((a) => `### ${a.filename} (phase: ${a.phase}, v${a.version})\n${a.content.slice(0, 500)}...`)
-    .join("\n\n");
+  try {
+    const systemPrompt = loadPrompt("documenter");
 
-  const userPrompt = buildContextBlock(
-    projectId,
-    `${taskDescription}\n\n## All Current Artifacts:\n${artifactsSummary}\n\nUpdate CLAUDE.md with decisions made this cycle, patterns established, and any client preferences. Keep it under 500 words.`
-  );
+    // Give the Documenter all artifacts from this cycle
+    const artifacts = listArtifacts(projectId);
+    const artifactsSummary = artifacts
+      .map((a) => `### ${a.filename} (phase: ${a.phase}, v${a.version})\n${a.content.slice(0, 500)}...`)
+      .join("\n\n");
 
-  const result = await runClaude({ systemPrompt, userPrompt });
-  const content = result.content;
-  const summary = extractSummary(content);
+    const userPrompt = buildContextBlock(
+      projectId,
+      `${taskDescription}\n\n## All Current Artifacts:\n${artifactsSummary}\n\nUpdate CLAUDE.md with decisions made this cycle, patterns established, and any client preferences. Keep it under 500 words.`
+    );
 
-  // Save the output as CLAUDE.md (Documenter owns this file)
-  saveArtifact(projectId, "review", "CLAUDE.md", content);
+    const result = await runClaude({ systemPrompt, userPrompt });
+    const content = result.content;
+    const summary = extractSummary(content);
 
-  return { content, summary };
+    // Save the output as CLAUDE.md (Documenter owns this file)
+    await saveArtifact(projectId, "review", "CLAUDE.md", content, cycleId);
+
+    emitAgentCompleted(meta, { inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0 });
+    return { content, summary };
+  } catch (err) {
+    emitAgentFailed(meta, err as Error);
+    throw err;
+  }
 }

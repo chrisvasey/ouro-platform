@@ -174,19 +174,23 @@ const app = new Elysia()
   })
 
   // ── Cycle ──
-  .post("/api/projects/:id/cycle/start", ({ params, error }) => {
+  .post("/api/projects/:id/cycle/start", ({ params, set, error }) => {
     const project = getProject(params.id);
     if (!project) return error(404, { message: "Project not found" });
-    if (isCycleRunning(params.id)) {
-      return error(409, { message: "Cycle already running for this project" });
-    }
 
-    // Kick off cycle asynchronously — don't await so the HTTP response returns immediately
-    runCycle(params.id).catch((err) => {
-      console.error(`[cycle] Unhandled cycle error for ${params.id}:`, err);
+    // Kick off cycle asynchronously. The mutex inside runCycle serialises
+    // concurrent requests — if one is already running it will throw and we log it.
+    runCycle(params.id).catch((err: Error) => {
+      if (err.message.includes("already running")) {
+        // Expected — concurrent request, silently ignore
+      } else {
+        console.error(`[cycle] Unhandled cycle error for ${params.id}:`, err);
+      }
     });
 
-    return { ok: true, message: "Cycle started" };
+    // Respond immediately — cycle runs in background
+    // If a cycle is already running the mutex will queue/reject it gracefully
+    return { ok: true, message: isCycleRunning(params.id) ? "Cycle queued (another already running)" : "Cycle started" };
   })
 
   .post("/api/projects/:id/cycle/stop", ({ params, error }) => {

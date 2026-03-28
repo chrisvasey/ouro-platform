@@ -21,11 +21,12 @@ import {
   getArtifactByPhase,
   postFeedMessage,
   setPreference,
+  listCycles,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
 
-import { runCycle, isCycleRunning, setBroadcastFn } from "./loop.js";
+import { runCycle, isCycleRunning, stopCycle, setBroadcastFn } from "./loop.js";
 import { extractIntent, type Intent } from "./intent.js";
 
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
@@ -186,6 +187,25 @@ const app = new Elysia()
     });
 
     return { ok: true, message: "Cycle started" };
+  })
+
+  .post("/api/projects/:id/cycle/stop", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    if (!isCycleRunning(params.id)) {
+      return error(409, { message: "No cycle is running for this project" });
+    }
+    const accepted = stopCycle(params.id);
+    if (!accepted) {
+      return error(409, { message: "No cycle is running for this project" });
+    }
+    return { ok: true, message: "Stop signal sent — cycle will halt after the current phase" };
+  })
+
+  .get("/api/projects/:id/cycles", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    return listCycles(params.id);
   })
 
   // ── Seed endpoint (convenience) ──

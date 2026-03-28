@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Agent, FeedMessage, InboxMessage, Project, WsEvent } from "./types";
+import type { Agent, CycleRun, FeedMessage, InboxMessage, Project, WsEvent } from "./types";
 import { api } from "./api";
 import { TopBar } from "./components/TopBar";
 import { AgentPanel } from "./components/AgentPanel";
 import { FeedPanel } from "./components/FeedPanel";
 import { InboxPanel } from "./components/InboxPanel";
 
-const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
+// BASE_URL is '/ouro/' in production and '/' in dev (set by vite base option).
+const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${import.meta.env.BASE_URL}ws`;
 
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -15,6 +16,7 @@ export default function App() {
   const [inboxMessages, setInboxMessages] = useState<InboxMessage[]>([]);
   const [agentUpdates, setAgentUpdates] = useState<Agent[]>([]);
   const [cycleRunning, setCycleRunning] = useState(false);
+  const [cycleHistory, setCycleHistory] = useState<CycleRun[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const currentProjectIdRef = useRef<string | null>(null);
 
@@ -36,6 +38,7 @@ export default function App() {
     setFeedMessages([]);
     setInboxMessages([]);
     setAgentUpdates([]);
+    setCycleHistory([]);
 
     // Subscribe WS to this project
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -45,10 +48,12 @@ export default function App() {
     Promise.all([
       api.feed.list(selectedProject.id),
       api.inbox.list(selectedProject.id),
-    ]).then(([feed, inbox]) => {
+      api.cycle.history(selectedProject.id),
+    ]).then(([feed, inbox, cycles]) => {
       if (currentProjectIdRef.current === selectedProject.id) {
         setFeedMessages(feed);
         setInboxMessages(inbox);
+        setCycleHistory(cycles);
       }
     }).catch(console.error);
   }, [selectedProject?.id]);
@@ -134,6 +139,12 @@ export default function App() {
         setCycleRunning(false);
       }
     }
+
+    if (payload.event === "cycle_update") {
+      if (payload.projectId !== pid) return;
+      // Re-fetch cycle history to get the final record
+      api.cycle.history(pid).then(setCycleHistory).catch(console.error);
+    }
   }
 
   // ── Start cycle ────────────────────────────────────────────────────────────
@@ -149,6 +160,17 @@ export default function App() {
     }
   }
 
+  // ── Stop cycle ─────────────────────────────────────────────────────────────
+
+  async function handleStopCycle() {
+    if (!selectedProject || !cycleRunning) return;
+    try {
+      await api.cycle.stop(selectedProject.id);
+    } catch (err) {
+      console.error("Failed to stop cycle:", err);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -160,6 +182,7 @@ export default function App() {
         onProjectsChange={setProjects}
         cycleRunning={cycleRunning}
         onStartCycle={handleStartCycle}
+        onStopCycle={handleStopCycle}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -168,7 +191,7 @@ export default function App() {
           agentUpdates={agentUpdates}
         />
 
-        <FeedPanel messages={feedMessages} />
+        <FeedPanel messages={feedMessages} cycleHistory={cycleHistory} />
 
         {selectedProject && (
           <InboxPanel

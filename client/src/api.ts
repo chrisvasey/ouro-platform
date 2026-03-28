@@ -1,6 +1,8 @@
-import type { Agent, Artifact, FeedMessage, InboxMessage, Project } from "./types";
+import type { Agent, Artifact, CycleRun, FeedMessage, InboxMessage, Project } from "./types";
 
-const BASE = "/api";
+// In production (base: '/ouro/'), BASE_URL is '/ouro/' → BASE becomes '/ouro/api'.
+// In dev (base: '/'),            BASE_URL is '/'       → BASE becomes '/api'.
+const BASE = `${import.meta.env.BASE_URL}api`;
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -48,6 +50,10 @@ export const api = {
   cycle: {
     start: (projectId: string) =>
       post<{ ok: boolean; message: string }>(`/projects/${projectId}/cycle/start`),
+    stop: (projectId: string) =>
+      post<{ ok: boolean; message: string }>(`/projects/${projectId}/cycle/stop`),
+    history: (projectId: string) =>
+      get<CycleRun[]>(`/projects/${projectId}/cycles`),
   },
   seed: () => post<{ ok: boolean; message: string }>("/seed"),
 };

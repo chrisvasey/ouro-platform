@@ -49,10 +49,27 @@ export interface Artifact {
   created_at: number;
 }
 
+export interface PhaseOutcome {
+  phase: string;
+  status: "complete" | "error" | "stopped";
+  started_at: number;
+  ended_at: number;
+}
+
+export interface CycleRun {
+  id: string;
+  project_id: string;
+  status: "running" | "complete" | "stopped" | "error";
+  started_at: number;
+  ended_at: number | null;
+  phase_outcomes: PhaseOutcome[];
+}
+
 export type WsEvent =
   | { event: "connected"; data: { clientCount: number } }
   | { event: "subscribed"; data: { projectId: string } }
   | { event: "feed_message"; projectId: string; data: FeedMessage }
   | { event: "inbox_message"; projectId: string; data: InboxMessage }
   | { event: "agent_status"; projectId: string; data: { role: string; status: string; current_task?: string | null } }
-  | { event: "phase_change"; projectId: string; data: { phase: string } };
+  | { event: "phase_change"; projectId: string; data: { phase: string } }
+  | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } };

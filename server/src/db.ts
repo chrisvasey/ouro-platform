@@ -104,6 +104,17 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS cycles (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL,
+    status         TEXT DEFAULT 'running',
+    started_at     INTEGER NOT NULL,
+    ended_at       INTEGER,
+    phase_outcomes TEXT DEFAULT '[]'
+  )
+`);
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function newId(): string {
@@ -408,13 +419,80 @@ export function getPreference(projectId: string, key: string): string | null {
   return row?.value ?? null;
 }
 
+// ─── Cycles ──────────────────────────────────────────────────────────────────
+
+export interface PhaseOutcome {
+  phase: string;
+  status: "complete" | "error" | "stopped";
+  started_at: number;
+  ended_at: number;
+}
+
+export interface CycleRun {
+  id: string;
+  project_id: string;
+  status: "running" | "complete" | "stopped" | "error";
+  started_at: number;
+  ended_at: number | null;
+  phase_outcomes: PhaseOutcome[];
+}
+
+interface CycleRow {
+  id: string;
+  project_id: string;
+  status: string;
+  started_at: number;
+  ended_at: number | null;
+  phase_outcomes: string;
+}
+
+function parseCycleRow(row: CycleRow): CycleRun {
+  return {
+    ...row,
+    status: row.status as CycleRun["status"],
+    phase_outcomes: JSON.parse(row.phase_outcomes ?? "[]") as PhaseOutcome[],
+  };
+}
+
+export function createCycleRecord(projectId: string): CycleRun {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO cycles (id, project_id, status, started_at, ended_at, phase_outcomes)
+     VALUES (?, ?, 'running', ?, NULL, '[]')`,
+    [id, projectId, ts]
+  );
+  return { id, project_id: projectId, status: "running", started_at: ts, ended_at: null, phase_outcomes: [] };
+}
+
+export function updateCycleRecord(
+  cycleId: string,
+  status: CycleRun["status"],
+  phaseOutcomes: PhaseOutcome[],
+  endedAt?: number
+): void {
+  db.run(
+    `UPDATE cycles SET status = ?, phase_outcomes = ?, ended_at = ? WHERE id = ?`,
+    [status, JSON.stringify(phaseOutcomes), endedAt ?? null, cycleId]
+  );
+}
+
+export function listCycles(projectId: string): CycleRun[] {
+  const rows = db
+    .query<CycleRow, [string]>(
+      "SELECT * FROM cycles WHERE project_id = ? ORDER BY started_at DESC"
+    )
+    .all(projectId);
+  return rows.map(parseCycleRow);
+}
+
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
 
 if (import.meta.main) {
   const args = Bun.argv.slice(2);
   if (args.includes("--reset")) {
     console.log("Dropping and recreating database...");
-    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences"];
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles"];
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`);
     }

@@ -2,6 +2,70 @@
 
 Ouro is a self-improving AI software agency. Specialised agents (PM, Researcher, Designer, Developer, Tester, Documenter) collaborate through a shared feed to build software projects autonomously — including Ouro itself.
 
+## Deploying via Caddy (Tailscale)
+
+To serve Ouro at `https://lucial.noodlefish-carat.ts.net/ouro/`:
+
+### 1. Build the React client
+
+```bash
+cd client && bun install && bun run build
+# Output: client/dist/
+```
+
+### 2. Install the Caddyfile
+
+The repo ships a ready-to-use `Caddyfile` at the repo root.
+
+```bash
+# Copy to wherever you cloned the repo, e.g. /opt/ouro-platform
+git clone <repo> /opt/ouro-platform
+
+# If the dist path in Caddyfile differs, edit the root directive:
+#   root * /opt/ouro-platform/client/dist
+
+sudo cp /opt/ouro-platform/Caddyfile /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+If you already have a `/etc/caddy/Caddyfile` with other sites, paste just the `lucial.noodlefish-carat.ts.net { … }` block from the repo `Caddyfile` into it.
+
+### 3. TLS on Tailscale
+
+Caddy will try to get a certificate automatically. On a Tailscale-only machine (no public port 80), auto-HTTPS won't work. Choose one of:
+
+**Option A — Tailscale cert (recommended):**
+```bash
+tailscale cert lucial.noodlefish-carat.ts.net
+# Writes lucial.noodlefish-carat.ts.net.crt / .key to current dir
+sudo mv lucial.noodlefish-carat.ts.net.* /etc/caddy/
+```
+Then uncomment the `tls /etc/caddy/...` lines in `Caddyfile`.
+
+**Option B — Caddy internal CA (self-signed, quick):**
+Add `tls internal` inside the site block in `Caddyfile`.
+
+### 4. Verify
+
+```bash
+curl -s https://lucial.noodlefish-carat.ts.net/ouro/ | grep '<title>'
+# Expected: <title>Ouro Platform</title>
+
+curl -s https://lucial.noodlefish-carat.ts.net/ouro/api/projects
+# Expected: JSON array of projects
+```
+
+### Caddyfile route summary
+
+| Caddy path | Strips to | Destination |
+|---|---|---|
+| `/ouro/api/*` | `/api/*` | `localhost:3001` (Elysia server) |
+| `/ouro/ws` | `/ws` | `localhost:3001` (WebSocket) |
+| `/ouro/*` | `/*` | `client/dist/` (static files) |
+| `/ouro` | — | 308 redirect → `/ouro/` |
+
+---
+
 ## How to run
 
 ### Prerequisites

@@ -19,11 +19,15 @@ import {
   getAgentsForProject,
   listArtifacts,
   getArtifactByPhase,
+  postFeedMessage,
+  setPreference,
+  listCycles,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
 
-import { runCycle, isCycleRunning, setBroadcastFn } from "./loop.js";
+import { runCycle, isCycleRunning, stopCycle, setBroadcastFn } from "./loop.js";
+import { extractIntent, type Intent } from "./intent.js";
 
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
 
@@ -95,11 +99,55 @@ const app = new Elysia()
 
   .post(
     "/api/projects/:id/inbox/:msgId/reply",
-    ({ params, body }) => {
-      replyToInboxMessage(params.msgId, body.body);
-      markInboxRead(params.msgId);
+    async ({ params, body }) => {
+      // Fetch the message before replying so we have context for intent extraction
       const messages = getInboxMessages(params.id);
-      const msg = messages.find((m) => m.id === params.msgId);
+      const inboxMessage = messages.find((m) => m.id === params.msgId);
+
+      // ── IntentGate: extract structured intent from the reply ────────────────
+      let intent: Intent = { type: "freeform", text: body.body };
+      const hasToken = !!(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY);
+
+      if (hasToken && inboxMessage) {
+        try {
+          intent = await extractIntent(
+            body.body,
+            `${inboxMessage.subject}: ${inboxMessage.body}`
+          );
+        } catch {
+          // Claude unavailable or parse failure — fall back to freeform, skip feed post
+        }
+      }
+
+      // ── Intent side-effects ─────────────────────────────────────────────────
+      if (intent.type === "preference") {
+        setPreference(params.id, intent.key, intent.value);
+      } else if (intent.type === "approval") {
+        const feedMsg = postFeedMessage(
+          params.id,
+          "pm",
+          "all",
+          `[PM → All] Client approved: ${intent.scope}. Continuing.`,
+          "decision"
+        );
+        broadcastToProject(params.id, "feed_message", feedMsg);
+      } else if (intent.type === "rejection") {
+        const feedMsg = postFeedMessage(
+          params.id,
+          "pm",
+          "all",
+          `[PM → All] Client rejected ${intent.scope}: ${intent.reason}. Will address in next cycle.`,
+          "note"
+        );
+        broadcastToProject(params.id, "feed_message", feedMsg);
+      }
+
+      // ── Persist reply + intent JSON ─────────────────────────────────────────
+      replyToInboxMessage(params.msgId, body.body, JSON.stringify(intent));
+      markInboxRead(params.msgId);
+
+      const updatedMessages = getInboxMessages(params.id);
+      const msg = updatedMessages.find((m) => m.id === params.msgId);
       return msg ?? { ok: true };
     },
     {
@@ -139,6 +187,25 @@ const app = new Elysia()
     });
 
     return { ok: true, message: "Cycle started" };
+  })
+
+  .post("/api/projects/:id/cycle/stop", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    if (!isCycleRunning(params.id)) {
+      return error(409, { message: "No cycle is running for this project" });
+    }
+    const accepted = stopCycle(params.id);
+    if (!accepted) {
+      return error(409, { message: "No cycle is running for this project" });
+    }
+    return { ok: true, message: "Stop signal sent — cycle will halt after the current phase" };
+  })
+
+  .get("/api/projects/:id/cycles", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    return listCycles(params.id);
   })
 
   // ── Seed endpoint (convenience) ──

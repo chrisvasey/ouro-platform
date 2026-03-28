@@ -9,6 +9,7 @@ interface TopBarProps {
   onProjectsChange: (projects: Project[]) => void;
   cycleRunning: boolean;
   onStartCycle: () => void;
+  onStopCycle: () => void;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -38,6 +39,7 @@ export function TopBar({
   onProjectsChange,
   cycleRunning,
   onStartCycle,
+  onStopCycle,
 }: TopBarProps) {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newName, setNewName] = useState("");
@@ -115,19 +117,29 @@ export function TopBar({
 
       <div className="flex-1" />
 
-      {/* Start cycle button */}
-      {selectedProject && (
+      {/* Cycle control buttons */}
+      {selectedProject && !cycleRunning && (
         <button
           onClick={onStartCycle}
-          disabled={cycleRunning}
-          className={`text-sm px-3 py-1.5 rounded font-medium transition-all ${
-            cycleRunning
-              ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-              : "bg-blue-600 hover:bg-blue-500 text-white"
-          }`}
+          className="text-sm px-3 py-1.5 rounded font-medium transition-all bg-blue-600 hover:bg-blue-500 text-white"
         >
-          {cycleRunning ? "Running…" : "Start Cycle"}
+          Start Cycle
         </button>
+      )}
+      {selectedProject && cycleRunning && (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-400 flex items-center gap-1.5">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            Running…
+          </span>
+          <button
+            onClick={onStopCycle}
+            className="text-sm px-3 py-1.5 rounded font-medium transition-all bg-gray-800 hover:bg-red-900 text-gray-400 hover:text-red-300 border border-gray-700 hover:border-red-800"
+            title="Stop after current phase completes"
+          >
+            Stop
+          </button>
+        </div>
       )}
 
       {/* New project form (inline dropdown) */}

@@ -48,17 +48,25 @@ db.run(`
 
 db.run(`
   CREATE TABLE IF NOT EXISTS inbox_messages (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT,
-    sender_role TEXT,
-    subject     TEXT,
-    body        TEXT,
-    is_read     INTEGER DEFAULT 0,
-    replied_at  INTEGER,
-    reply_body  TEXT,
-    created_at  INTEGER
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT,
+    sender_role       TEXT,
+    subject           TEXT,
+    body              TEXT,
+    is_read           INTEGER DEFAULT 0,
+    replied_at        INTEGER,
+    reply_body        TEXT,
+    reply_intent_json TEXT,
+    created_at        INTEGER
   )
 `);
+
+// Migrate existing databases that pre-date the reply_intent_json column
+try {
+  db.run("ALTER TABLE inbox_messages ADD COLUMN reply_intent_json TEXT");
+} catch {
+  // Column already exists — ignore
+}
 
 db.run(`
   CREATE TABLE IF NOT EXISTS tasks (
@@ -93,6 +101,17 @@ db.run(`
     key        TEXT,
     value      TEXT,
     created_at INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS cycles (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL,
+    status         TEXT DEFAULT 'running',
+    started_at     INTEGER NOT NULL,
+    ended_at       INTEGER,
+    phase_outcomes TEXT DEFAULT '[]'
   )
 `);
 
@@ -236,6 +255,7 @@ export interface InboxMessage {
   is_read: number;
   replied_at: number | null;
   reply_body: string | null;
+  reply_intent_json: string | null;
   created_at: number;
 }
 
@@ -248,11 +268,11 @@ export function sendInboxMessage(
   const id = newId();
   const ts = now();
   db.run(
-    `INSERT INTO inbox_messages (id, project_id, sender_role, subject, body, is_read, replied_at, reply_body, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?)`,
+    `INSERT INTO inbox_messages (id, project_id, sender_role, subject, body, is_read, replied_at, reply_body, reply_intent_json, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?)`,
     [id, projectId, senderRole, subject, body, ts]
   );
-  return { id, project_id: projectId, sender_role: senderRole, subject, body, is_read: 0, replied_at: null, reply_body: null, created_at: ts };
+  return { id, project_id: projectId, sender_role: senderRole, subject, body, is_read: 0, replied_at: null, reply_body: null, reply_intent_json: null, created_at: ts };
 }
 
 export function getInboxMessages(projectId: string): InboxMessage[] {
@@ -263,10 +283,10 @@ export function getInboxMessages(projectId: string): InboxMessage[] {
     .all(projectId);
 }
 
-export function replyToInboxMessage(msgId: string, replyBody: string): void {
+export function replyToInboxMessage(msgId: string, replyBody: string, intentJson?: string): void {
   db.run(
-    "UPDATE inbox_messages SET reply_body = ?, replied_at = ?, is_read = 1 WHERE id = ?",
-    [replyBody, now(), msgId]
+    "UPDATE inbox_messages SET reply_body = ?, replied_at = ?, is_read = 1, reply_intent_json = ? WHERE id = ?",
+    [replyBody, now(), intentJson ?? null, msgId]
   );
 }
 
@@ -399,13 +419,80 @@ export function getPreference(projectId: string, key: string): string | null {
   return row?.value ?? null;
 }
 
+// ─── Cycles ──────────────────────────────────────────────────────────────────
+
+export interface PhaseOutcome {
+  phase: string;
+  status: "complete" | "error" | "stopped";
+  started_at: number;
+  ended_at: number;
+}
+
+export interface CycleRun {
+  id: string;
+  project_id: string;
+  status: "running" | "complete" | "stopped" | "error";
+  started_at: number;
+  ended_at: number | null;
+  phase_outcomes: PhaseOutcome[];
+}
+
+interface CycleRow {
+  id: string;
+  project_id: string;
+  status: string;
+  started_at: number;
+  ended_at: number | null;
+  phase_outcomes: string;
+}
+
+function parseCycleRow(row: CycleRow): CycleRun {
+  return {
+    ...row,
+    status: row.status as CycleRun["status"],
+    phase_outcomes: JSON.parse(row.phase_outcomes ?? "[]") as PhaseOutcome[],
+  };
+}
+
+export function createCycleRecord(projectId: string): CycleRun {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO cycles (id, project_id, status, started_at, ended_at, phase_outcomes)
+     VALUES (?, ?, 'running', ?, NULL, '[]')`,
+    [id, projectId, ts]
+  );
+  return { id, project_id: projectId, status: "running", started_at: ts, ended_at: null, phase_outcomes: [] };
+}
+
+export function updateCycleRecord(
+  cycleId: string,
+  status: CycleRun["status"],
+  phaseOutcomes: PhaseOutcome[],
+  endedAt?: number
+): void {
+  db.run(
+    `UPDATE cycles SET status = ?, phase_outcomes = ?, ended_at = ? WHERE id = ?`,
+    [status, JSON.stringify(phaseOutcomes), endedAt ?? null, cycleId]
+  );
+}
+
+export function listCycles(projectId: string): CycleRun[] {
+  const rows = db
+    .query<CycleRow, [string]>(
+      "SELECT * FROM cycles WHERE project_id = ? ORDER BY started_at DESC"
+    )
+    .all(projectId);
+  return rows.map(parseCycleRow);
+}
+
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
 
 if (import.meta.main) {
   const args = Bun.argv.slice(2);
   if (args.includes("--reset")) {
     console.log("Dropping and recreating database...");
-    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences"];
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles"];
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`);
     }

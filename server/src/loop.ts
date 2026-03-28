@@ -358,7 +358,8 @@ export async function runCycle(projectId: string): Promise<void> {
 async function runAgentWithTimeout(
   phase: string,
   projectId: string,
-  taskDescription: string
+  taskDescription: string,
+  onFeed?: (message: string) => void
 ): Promise<AgentResult> {
   const makeTimeoutPromise = () =>
     new Promise<never>((_, reject) =>
@@ -374,7 +375,7 @@ async function runAgentWithTimeout(
   // First attempt
   try {
     return await Promise.race([
-      runAgent(phase, projectId, taskDescription),
+      runAgent(phase, projectId, taskDescription, onFeed),
       makeTimeoutPromise(),
     ]);
   } catch (firstErr) {
@@ -393,7 +394,7 @@ async function runAgentWithTimeout(
     // Second attempt
     try {
       return await Promise.race([
-        runAgent(phase, projectId, taskDescription),
+        runAgent(phase, projectId, taskDescription, onFeed),
         makeTimeoutPromise(),
       ]);
     } catch (secondErr) {
@@ -426,17 +427,18 @@ async function runAgentWithTimeout(
 async function runAgent(
   phase: string,
   projectId: string,
-  taskDescription: string
+  taskDescription: string,
+  onFeed?: (message: string) => void
 ): Promise<AgentResult> {
   switch (phase) {
     case "research":
-      return runResearcher(projectId, taskDescription);
+      return runResearcher(projectId, taskDescription, onFeed);
     case "spec":
       return runPM(projectId, taskDescription);
     case "design":
       return runDesigner(projectId, taskDescription);
     case "build":
-      return runDeveloper(projectId, taskDescription);
+      return runDeveloper(projectId, taskDescription, onFeed);
     case "test":
       return runTester(projectId, taskDescription);
     case "review":

@@ -10,6 +10,7 @@ import chalk from "chalk";
 import { spawnSync } from "child_process";
 
 const BASE_URL = process.env.OURO_URL ?? "http://localhost:3007";
+const BASE_WS = BASE_URL.replace(/^http/, "ws");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,50 @@ interface Artifact {
 interface ReplyResponse {
   ok?: boolean;
   intent?: { type: string; key: string; value: string } | null;
+}
+
+// ─── Server management ────────────────────────────────────────────────────────
+
+let serverProc: ReturnType<typeof Bun.spawn> | null = null;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function isServerUp(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureServer(): Promise<void> {
+  if (await isServerUp()) return;
+
+  console.log(chalk.dim("[ouro] Server not running — starting it..."));
+
+  const serverEntry = new URL("./index.ts", import.meta.url).pathname;
+
+  serverProc = Bun.spawn(["bun", "run", serverEntry], {
+    stdout: "ignore",
+    stderr: "ignore",
+    stdin: "ignore",
+  });
+
+  // Poll until ready (max 10 seconds)
+  for (let i = 0; i < 20; i++) {
+    await sleep(500);
+    if (await isServerUp()) {
+      console.log(chalk.dim("[ouro] Server ready."));
+      return;
+    }
+  }
+
+  throw new Error("Server failed to start within 10 seconds.");
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -177,6 +222,120 @@ async function resolveProject(slugOrId: string): Promise<Project> {
   return found;
 }
 
+// ─── WebSocket watch helpers ──────────────────────────────────────────────────
+
+const ROLE_COLORS: Record<string, string> = {
+  pm: "\x1b[34m",         // blue
+  researcher: "\x1b[35m", // magenta
+  designer: "\x1b[95m",   // bright magenta
+  developer: "\x1b[36m",  // cyan
+  tester: "\x1b[33m",     // yellow
+  documenter: "\x1b[32m", // green
+};
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+const DIM = "\x1b[2m";
+
+function roleColor(role: string): string {
+  return ROLE_COLORS[role] ?? "\x1b[37m";
+}
+
+function wsTs(): string {
+  return DIM + new Date().toLocaleTimeString() + RESET;
+}
+
+/**
+ * Connect to WS and stream events for the given project.
+ * Resolves when:
+ *   - exitOnComplete=true and phase "complete" is received
+ *   - exitOnComplete=false and the WS is closed / Ctrl+C
+ */
+function watchProject(project: Project, exitOnComplete: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${BASE_WS}/ws`);
+    let resolved = false;
+
+    function done() {
+      if (!resolved) {
+        resolved = true;
+        ws.close();
+        resolve();
+      }
+    }
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ type: "subscribe", projectId: project.id }));
+    });
+
+    ws.addEventListener("message", (ev: MessageEvent) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(ev.data as string);
+      } catch {
+        return;
+      }
+
+      switch (msg.event) {
+        case "subscribed":
+          console.log(`${wsTs()} Connected to ${BOLD}${project.name}${RESET}`);
+          break;
+
+        case "phase_change": {
+          const phase = msg.data?.phase as string;
+          if (phase === "complete") {
+            console.log(`\n${wsTs()} ${BOLD}\x1b[32m✓ Cycle complete — all 6 phases done.${RESET}\n`);
+            if (exitOnComplete) done();
+          } else {
+            console.log(`\n${wsTs()} ${BOLD}── Phase: ${phase.toUpperCase()} ──${RESET}`);
+          }
+          break;
+        }
+
+        case "agent_status": {
+          const role = msg.data?.role as string;
+          const status = msg.data?.status as string;
+          const color = roleColor(role);
+          if (status === "thinking") {
+            process.stdout.write(`${wsTs()} ${color}${role}${RESET} thinking...`);
+          } else if (status === "idle") {
+            process.stdout.write(` ${DIM}done${RESET}\n`);
+          } else if (status === "blocked") {
+            process.stdout.write(` \x1b[31mBLOCKED\x1b[0m\n`);
+          }
+          break;
+        }
+
+        case "feed_message": {
+          const content = (msg.data?.content as string) ?? "";
+          const role = msg.data?.sender_role as string;
+          const color = roleColor(role);
+          const short = content.length > 160 ? content.slice(0, 157) + "…" : content;
+          console.log(`${wsTs()} ${color}[${role}]${RESET} ${short}`);
+          break;
+        }
+
+        case "inbox_message": {
+          const subject = msg.data?.subject as string;
+          console.log(`\n${wsTs()} \x1b[33m[inbox]\x1b[0m ${subject}`);
+          if (exitOnComplete) done();
+          break;
+        }
+      }
+    });
+
+    ws.addEventListener("error", (_ev: Event) => {
+      if (!resolved) reject(new Error("WebSocket error"));
+    });
+
+    ws.addEventListener("close", () => {
+      if (!resolved) {
+        resolved = true;
+        resolve();
+      }
+    });
+  });
+}
+
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 async function cmdStatus(): Promise<void> {
@@ -285,11 +444,23 @@ async function cmdCycle(slugOrId: string, action: string): Promise<void> {
     process.exit(1);
   }
 
+  await ensureServer();
   const project = await resolveProject(slugOrId);
 
   if (action === "start") {
-    await post(`/api/projects/${project.id}/cycle/start`);
-    console.log(chalk.green("▶") + ` Cycle started for ${chalk.bold(project.name)}`);
+    const res = await fetch(`${BASE_URL}/api/projects/${project.id}/cycle/start`, {
+      method: "POST",
+    });
+    const body = await res.json() as any;
+    if (!res.ok) {
+      if (res.status === 409) {
+        console.log(chalk.yellow(`⚠`) + ` ${body.message} — attaching watch...`);
+      } else {
+        throw new Error(body.message ?? "Failed to start cycle");
+      }
+    } else {
+      console.log(chalk.green("▶") + ` Cycle started for ${chalk.bold(project.name)}`);
+    }
   } else {
     await post(`/api/projects/${project.id}/cycle/stop`);
     console.log(chalk.yellow("■") + ` Cycle stopped for ${chalk.bold(project.name)}`);
@@ -405,6 +576,7 @@ async function cmdCreate(name: string, description: string): Promise<void> {
 }
 
 async function cmdArtifacts(slugOrId: string, phase?: string): Promise<void> {
+  await ensureServer();
   const project = await resolveProject(slugOrId);
 
   if (phase) {
@@ -506,9 +678,18 @@ function renderWatch(project: Project, agents: Agent[], feed: FeedMessage[]): vo
   console.log(chalk.dim("Press Ctrl+C to exit"));
 }
 
-async function cmdWatch(slugOrId: string): Promise<void> {
+async function cmdWatch(slugOrId: string, opts: { ws?: boolean } = {}): Promise<void> {
+  await ensureServer();
   const project = await resolveProject(slugOrId);
 
+  // --ws flag: use WebSocket streaming (real-time, blocks until closed)
+  if (opts.ws) {
+    console.log(chalk.dim(`[ouro] Watching ${project.name} — press Ctrl+C to stop.`));
+    await watchProject(project, false);
+    return;
+  }
+
+  // Default: polling dashboard (refreshes every 3s)
   async function refresh(): Promise<void> {
     let freshProject: Project = project;
     let agents: Agent[] = [];
@@ -563,7 +744,7 @@ function printHelp(): void {
     ['create "<name>" "<description>"', "Create a new project"],
     ["artifacts <project> [phase]", "List artifacts, or print phase content to stdout"],
     ["logs [--lines N]", "Show ouro-platform systemd service logs"],
-    ["watch <project>", "Live agent status + feed panel (refreshes every 3s)"],
+    ["watch <project> [--ws]", "Live agent status + feed panel; --ws for WebSocket stream"],
   ];
   for (const [cmd, desc] of cmds) {
     console.log(`  ${chalk.cyan(cmd.padEnd(42))}  ${chalk.dim(desc)}`);
@@ -665,10 +846,11 @@ async function main(): Promise<void> {
     case "watch": {
       const slugOrId = args[0];
       if (!slugOrId) {
-        console.error(chalk.red("Usage: ouro watch <project>"));
+        console.error(chalk.red("Usage: ouro watch <project> [--ws]"));
         process.exit(1);
       }
-      await cmdWatch(slugOrId);
+      const useWs = args.includes("--ws");
+      await cmdWatch(slugOrId, { ws: useWs });
       break;
     }
 
@@ -686,7 +868,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(chalk.red("Error:"), (err as Error).message);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(chalk.red("Error:"), (err as Error).message);
+    process.exit(1);
+  })
+  .finally(() => {
+    // If we auto-spawned the server, leave it running for subsequent commands
+    if (serverProc) {
+      serverProc.unref();
+    }
+  });

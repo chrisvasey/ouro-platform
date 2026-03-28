@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Agent, CycleRun, FeedMessage, InboxMessage, Project, WsEvent } from "./types";
 import { api } from "./api";
 import { TopBar } from "./components/TopBar";
-import { AgentPanel } from "./components/AgentPanel";
+import { AgentPanel, type AgentActionEntry } from "./components/AgentPanel";
 import { FeedPanel } from "./components/FeedPanel";
 import { InboxPanel } from "./components/InboxPanel";
+import { ArtifactDrawer } from "./components/ArtifactDrawer";
 
 // BASE_URL is '/ouro/' in production and '/' in dev (set by vite base option).
 const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${import.meta.env.BASE_URL}ws`;
@@ -17,6 +18,12 @@ export default function App() {
   const [agentUpdates, setAgentUpdates] = useState<Agent[]>([]);
   const [cycleRunning, setCycleRunning] = useState(false);
   const [cycleHistory, setCycleHistory] = useState<CycleRun[]>([]);
+
+  // Agent action history for sparklines: role → last 5 entries
+  const [agentHistory, setAgentHistory] = useState<Record<string, AgentActionEntry[]>>({});
+
+  // Artifact drawer state: which phase to show (null = closed)
+  const [artifactDrawerPhase, setArtifactDrawerPhase] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const currentProjectIdRef = useRef<string | null>(null);
 
@@ -39,6 +46,8 @@ export default function App() {
     setInboxMessages([]);
     setAgentUpdates([]);
     setCycleHistory([]);
+    setAgentHistory({});
+    setArtifactDrawerPhase(null);
 
     // Subscribe WS to this project
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -127,7 +136,20 @@ export default function App() {
 
     if (payload.event === "agent_status") {
       if (payload.projectId !== pid) return;
+      const { role, status } = payload.data;
+
+      // Update live agent state
       setAgentUpdates([payload.data as unknown as Agent]);
+
+      // Append to sparkline history (keep last 5 per role)
+      setAgentHistory((prev) => {
+        const existing = prev[role] ?? [];
+        const entry: AgentActionEntry = { status, ts: Date.now() };
+        return {
+          ...prev,
+          [role]: [...existing.slice(-4), entry],
+        };
+      });
     }
 
     if (payload.event === "phase_change") {
@@ -189,9 +211,14 @@ export default function App() {
         <AgentPanel
           projectId={selectedProject?.id ?? ""}
           agentUpdates={agentUpdates}
+          agentHistory={agentHistory}
         />
 
-        <FeedPanel messages={feedMessages} cycleHistory={cycleHistory} />
+        <FeedPanel
+          messages={feedMessages}
+          cycleHistory={cycleHistory}
+          onPhaseClick={(phase) => setArtifactDrawerPhase(phase)}
+        />
 
         {selectedProject && (
           <InboxPanel
@@ -201,6 +228,15 @@ export default function App() {
           />
         )}
       </div>
+
+      {/* Artifact drawer — right-side overlay when a phase is clicked */}
+      {artifactDrawerPhase && selectedProject && (
+        <ArtifactDrawer
+          projectId={selectedProject.id}
+          phase={artifactDrawerPhase}
+          onClose={() => setArtifactDrawerPhase(null)}
+        />
+      )}
     </div>
   );
 }

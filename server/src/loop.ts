@@ -162,7 +162,12 @@ export async function runCycle(projectId: string): Promise<void> {
 
     let phaseStatus: PhaseOutcome["status"] = "complete";
     try {
-      const result = await runAgentWithTimeout(phase, projectId, taskDescription);
+      // Callback for agents to post incremental feed messages during their work
+      const onFeed = (message: string): void => {
+        const feedMsg = postFeedMessage(projectId, role, "all", message, "note");
+        broadcast(projectId, "feed_message", feedMsg);
+      };
+      const result = await runAgentWithTimeout(phase, projectId, taskDescription, onFeed);
       lastResult = result;
 
       saveArtifact(projectId, phase, filename, result.content);

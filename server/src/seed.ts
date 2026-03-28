@@ -47,7 +47,7 @@ export async function seed(): Promise<void> {
       ouroProjectId,
       "pm",
       "Welcome to Ouro",
-      `Hi Chris,\n\nI'm your Product Manager. I've set up the team and we're ready to go.\n\nHit "Start Cycle" and I'll kick things off — the team will run through research, spec, design, build, test, and review phases automatically. I'll send you a summary when we're done.\n\nIf we need input during a cycle, I'll message you here. Otherwise, sit back.\n\n— PM`
+      `Welcome to Ouro. I'm your Product Manager. When you reply to my messages, I'll understand your intent automatically — preferences you state will be remembered across all future cycles. Ready to start — hit Start Cycle and I'll kick things off.`
     );
 
     // Initial feed message

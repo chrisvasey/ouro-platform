@@ -68,6 +68,9 @@ const phaseToTask: Record<string, string> = {
 /** Global state for currently running cycles (projectId → running) */
 const runningCycles = new Set<string>();
 
+/** Cycles that have been requested to stop (checked between phases) */
+const stoppedCycles = new Set<string>();
+
 /** Event emitter for broadcasting real-time updates */
 type BroadcastFn = (projectId: string, event: string, data: unknown) => void;
 let broadcast: BroadcastFn = () => {};
@@ -78,6 +81,16 @@ export function setBroadcastFn(fn: BroadcastFn): void {
 
 export function isCycleRunning(projectId: string): boolean {
   return runningCycles.has(projectId);
+}
+
+/**
+ * Request a running cycle to stop. The cycle will halt before the next phase.
+ * Returns false if no cycle is running for that project.
+ */
+export function stopCycle(projectId: string): boolean {
+  if (!runningCycles.has(projectId)) return false;
+  stoppedCycles.add(projectId);
+  return true;
 }
 
 /**
@@ -99,6 +112,17 @@ export async function runCycle(projectId: string): Promise<void> {
     let lastResult: AgentResult | null = null;
 
     for (const phase of phases) {
+      // Check if a stop was requested before starting the next phase
+      if (stoppedCycles.has(projectId)) {
+        stoppedCycles.delete(projectId);
+        const feedMsg = postFeedMessage(projectId, "pm", "all", "Cycle stopped by user request.", "note");
+        broadcast(projectId, "feed_message", feedMsg);
+        setProjectPhase(projectId, "complete");
+        broadcast(projectId, "phase_change", { phase: "complete" });
+        console.log(`[loop] [${project.name}] Cycle stopped by request.`);
+        return;
+      }
+
       const role = phaseToRole[phase];
       const filename = phaseToFilename[phase];
       const taskDescription = phaseToTask[phase];

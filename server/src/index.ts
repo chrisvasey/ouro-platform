@@ -23,7 +23,50 @@ import {
   type InboxMessage,
 } from "./db.js";
 
-import { runCycle, isCycleRunning, setBroadcastFn } from "./loop.js";
+import { runCycle, isCycleRunning, stopCycle, setBroadcastFn } from "./loop.js";
+
+// ─── Intent extraction ────────────────────────────────────────────────────────
+
+interface Intent {
+  type: string;
+  key: string;
+  value: string;
+}
+
+function extractIntent(body: string): Intent | null {
+  const lower = body.toLowerCase();
+
+  const patterns: Array<{ keywords: string[]; key: string; canonical: string }> = [
+    { keywords: ["tailwind", "tailwindcss"], key: "styling", canonical: "Tailwind" },
+    { keywords: ["css modules"], key: "styling", canonical: "CSS Modules" },
+    { keywords: ["styled-components", "styled components"], key: "styling", canonical: "styled-components" },
+    { keywords: ["bootstrap"], key: "styling", canonical: "Bootstrap" },
+    { keywords: ["shadcn"], key: "styling", canonical: "shadcn/ui" },
+    { keywords: ["react"], key: "framework", canonical: "React" },
+    { keywords: ["vue"], key: "framework", canonical: "Vue" },
+    { keywords: ["angular"], key: "framework", canonical: "Angular" },
+    { keywords: ["svelte"], key: "framework", canonical: "Svelte" },
+    { keywords: ["next.js", "nextjs"], key: "framework", canonical: "Next.js" },
+    { keywords: ["typescript"], key: "language", canonical: "TypeScript" },
+    { keywords: ["javascript"], key: "language", canonical: "JavaScript" },
+    { keywords: ["postgres", "postgresql"], key: "database", canonical: "PostgreSQL" },
+    { keywords: ["sqlite"], key: "database", canonical: "SQLite" },
+    { keywords: ["mongodb", "mongo"], key: "database", canonical: "MongoDB" },
+    { keywords: ["mysql"], key: "database", canonical: "MySQL" },
+    { keywords: ["bun"], key: "runtime", canonical: "Bun" },
+    { keywords: ["node"], key: "runtime", canonical: "Node.js" },
+  ];
+
+  for (const pattern of patterns) {
+    for (const keyword of pattern.keywords) {
+      if (lower.includes(keyword)) {
+        return { type: "preference", key: pattern.key, value: pattern.canonical };
+      }
+    }
+  }
+
+  return null;
+}
 
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
 
@@ -98,9 +141,8 @@ const app = new Elysia()
     ({ params, body }) => {
       replyToInboxMessage(params.msgId, body.body);
       markInboxRead(params.msgId);
-      const messages = getInboxMessages(params.id);
-      const msg = messages.find((m) => m.id === params.msgId);
-      return msg ?? { ok: true };
+      const intent = extractIntent(body.body);
+      return { ok: true, intent };
     },
     {
       body: t.Object({
@@ -139,6 +181,16 @@ const app = new Elysia()
     });
 
     return { ok: true, message: "Cycle started" };
+  })
+
+  .post("/api/projects/:id/cycle/stop", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    if (!isCycleRunning(params.id)) {
+      return error(409, { message: "No cycle running for this project" });
+    }
+    stopCycle(params.id);
+    return { ok: true, message: "Cycle stop requested" };
   })
 
   // ── Seed endpoint (convenience) ──

@@ -113,9 +113,16 @@ export async function runCycle(projectId: string): Promise<void> {
 
       console.log(`[loop] [${project.name}] Phase: ${phase} → ${role} thinking...`);
 
+      // Callback that lets agents post incremental feed messages during their work
+      // (currently used by the developer agent to report step-by-step progress)
+      const onFeed = (message: string): void => {
+        const feedMsg = postFeedMessage(projectId, role, "all", message, "note");
+        broadcast(projectId, "feed_message", feedMsg);
+      };
+
       // Run the agent
       try {
-        const result = await runAgent(phase, projectId, taskDescription);
+        const result = await runAgent(phase, projectId, taskDescription, onFeed);
         lastResult = result;
 
         // Save artifact
@@ -180,7 +187,8 @@ export async function runCycle(projectId: string): Promise<void> {
 async function runAgent(
   phase: string,
   projectId: string,
-  taskDescription: string
+  taskDescription: string,
+  onFeed?: (message: string) => void
 ): Promise<AgentResult> {
   switch (phase) {
     case "research":
@@ -190,7 +198,7 @@ async function runAgent(
     case "design":
       return runDesigner(projectId, taskDescription);
     case "build":
-      return runDeveloper(projectId, taskDescription);
+      return runDeveloper(projectId, taskDescription, onFeed);
     case "test":
       return runTester(projectId, taskDescription);
     case "review":

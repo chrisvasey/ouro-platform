@@ -27,7 +27,7 @@ export async function runDesigner(projectId: string, taskDescription: string): P
     `${taskDescription}${additionalContext}\n\nProduce design.md with user flows, component tree, layout specs, component specs, and edge cases.`
   );
 
-  const result = await runClaude({ systemPrompt, userPrompt });
+  const result = await runClaude({ systemPrompt, userPrompt, timeoutMs: 90_000 });
   const content = result.content;
   const summary = extractSummary(content);
 

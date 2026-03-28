@@ -19,7 +19,7 @@ export async function runResearcher(projectId: string, taskDescription: string):
     `${taskDescription}\n\nProduce a structured research.md covering competitors, OSS libraries, UI patterns, dev patterns, risks, and recommendations.`
   );
 
-  const result = await runClaude({ systemPrompt, userPrompt });
+  const result = await runClaude({ systemPrompt, userPrompt, timeoutMs: 90_000 });
   const content = result.content;
   const summary = extractSummary(content);
 

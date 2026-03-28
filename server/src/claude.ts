@@ -15,6 +15,13 @@ export interface ClaudeRunOptions {
   userPrompt: string;
   /** Max tokens to request. Defaults to 4096. */
   maxTokens?: number;
+  /**
+   * Per-call timeout in milliseconds. If the Claude subprocess does not
+   * respond within this window, runClaude rejects with an error whose
+   * `.timeout` property is `true`. Callers can catch and retry.
+   * Defaults to no timeout.
+   */
+  timeoutMs?: number;
 }
 
 export interface ClaudeRunResult {
@@ -40,7 +47,7 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
 
   const fullPrompt = `${opts.systemPrompt}\n\n${opts.userPrompt}`;
 
-  try {
+  const execute = async (): Promise<ClaudeRunResult> => {
     // Attempt to call the claude CLI with --print (non-interactive, single response)
     const proc = Bun.spawn(
       ["claude", "--print", "--dangerously-skip-permissions"],
@@ -77,7 +84,23 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
     }
 
     return { content, real: true };
+  };
+
+  try {
+    if (opts.timeoutMs) {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          const err = new Error(`Claude call timed out after ${opts.timeoutMs}ms`);
+          (err as NodeJS.ErrnoException & { timeout: boolean }).timeout = true;
+          reject(err);
+        }, opts.timeoutMs);
+      });
+      return await Promise.race([execute(), timeoutPromise]);
+    }
+    return await execute();
   } catch (err) {
+    // Re-throw timeout errors so callers can detect and retry
+    if ((err as { timeout?: boolean }).timeout) throw err;
     console.warn("[claude] Failed to spawn CLI:", (err as Error).message);
     return { content: mockOutput(opts.userPrompt), real: false };
   }

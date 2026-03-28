@@ -27,9 +27,9 @@ export function buildContextBlock(projectId: string, taskDescription: string): s
   const claudeMdContent = claudeMd ? claudeMd.content : "(No CLAUDE.md yet — use reasonable defaults)";
 
   // Last 10 feed messages (oldest first for chronological reading)
-  const feedMessages = getFeedMessages(projectId, 10).reverse();
+  const feedMessages = getFeedMessages(projectId, 5).reverse();
   const feedLines = feedMessages
-    .map((m) => `[${m.sender_role} → ${m.recipient}] (${m.message_type}) ${m.content.slice(0, 300)}`)
+    .map((m) => `[${m.sender_role} → ${m.recipient}] (${m.message_type}) ${m.content.slice(0, 120)}`)
     .join("\n");
 
   return `--- PROJECT CONTEXT ---

@@ -1,0 +1,110 @@
+# Implementation Plan — Cycle 5 (Updated 2026-03-28)
+
+> **Pre-task audit (confirmed from live codebase, 2026-03-28):**
+> - `@anthropic-ai/sdk ^0.80.0` installed; `server/src/claude.ts` fully SDK-migrated ✓
+> - `events` table, `insertEvent`, `getEventsByCycle`, `getEventsPage` in `db.ts` ✓
+> - `loop.ts` fires `insertEvent` at phase_start / artifact_save / phase_complete / phase_failed ✓ — **GAP: 4 cycle-level events missing** (`cycle_started`, `cycle_stopped`, `cycle_complete`, `cycle_error`); `EventType` union also missing these 4 values
+> - `GET /api/projects/:id/events`, `PUT /api/projects/:id/preferences`, WS snapshot-on-subscribe in `index.ts` ✓
+> - `client/src/hooks/useWebSocket.ts` exists and matches spec ✓
+> - `react-diff-view` NOT installed in client ✗
+> - `blocks_cycle`, `blocker_sub_type`, `proposed_diff` columns MISSING from `inbox_messages` ✗
+> - All new client components (AppStateProvider, CycleProgressBar, AgentRail, BlockerModal, ArtifactView, etc.) MISSING ✗
+> - `App.tsx` has dead `wsRef.current` reference (line 53) from incomplete refactor ✗
+
+---
+
+## Remaining Tasks (20 total, in implementation order)
+
+**0a.** `server/src/db.ts` — extend `EventType` union: add `| 'cycle_started' | 'cycle_complete' | 'cycle_stopped' | 'cycle_error'` (4 new literal values; no schema migration needed — column is TEXT)
+
+**0b.** `server/src/loop.ts` — add 4 missing `insertEvent` calls for cycle-level milestones:
+- After `createCycleRecord(projectId)` (line ~141): `event_type: 'cycle_started'`, `cycle_id: cycleRecord.id`, `agent_role: null`, `payload: {}`, `token_count: 0`, `cost_usd: 0`
+- Inside `if (stopped)` branch after `updateCycleRecord("stopped")` (line ~340): `event_type: 'cycle_stopped'`, same cycle_id
+- Inside `else` branch after `updateCycleRecord("complete")` (line ~376): `event_type: 'cycle_complete'`
+- Inside top-level `catch` block after `updateCycleRecord("error")` (line ~383): `event_type: 'cycle_error'`, `payload: { error: (err as Error).message }`
+
+1. `server/src/db.ts` — add `blocks_cycle INTEGER DEFAULT 0`, `blocker_sub_type TEXT`, `proposed_diff TEXT`, `spend_summary TEXT` columns to `inbox_messages` via `ALTER TABLE … ADD COLUMN` in `try/catch` blocks (same pattern as `reply_intent_json` migration on line 66)
+2. `client/package.json` — `bun add react-diff-view diff @types/diff`; verify `import { parseDiff, Diff, Hunk } from 'react-diff-view/esm'` resolves under Vite 5 (GH#3); fallback to `react-diff-viewer-continued` if not
+3. `client/src/types.ts` — add `AgentRole`, `AgentStatus`, `PhaseStatus`, `PhaseState`, `PhaseMeta`, `ThoughtEntry`, `Banner`, `SnapshotPayload`, `AppState` types; extend `Agent` with `last_phase_token_count: number` and `role: AgentRole`; extend `InboxMessage` with `blocks_cycle: number`, `blocker_sub_type: string | null`, `proposed_diff: string | null`, `spend_summary: Record<string, number> | null`
+4. `client/src/index.css` — prepend `@import 'react-diff-view/style/index.css'`; add `.artifact-diff-view` scoped block with 10 CSS overrides (green tints for add lines, red tints for delete lines, transparent normal lines, monospace 11px for code, `#030712` bg for widget)
+5. `client/src/hooks/useSnapshot.ts` — NEW: `useReducer` with actions SNAPSHOT / AGENT_EVENT / PHASE_META / BLOCKER / PROPOSED_CHANGE_RESOLVED; SNAPSHOT replaces all state atomically and flushes 50-item pre-hydration ring buffer; pre-snapshot events buffered (drop oldest + `console.warn` if > 50); BLOCKER only appends messages with `blocks_cycle === 1`; `phaseStates` derived from `cycle.phase_outcomes` on SNAPSHOT; returns `{ events, cycle, agents, activeRole, inboxCount, phaseStates, phaseMeta, blockerQueue, hydrated }`
+6. `client/src/components/AppState/index.ts` — NEW: `AppStateProvider({ children, projectId })` composing `useWebSocket(projectId)` + `useSnapshot(lastMessage)`; `AppStateContext` with full `AppState` interface; `useAppState()` throws if used outside provider
+7. `client/src/components/ConnectionStatus/index.ts` — NEW: reads `wsStatus` from `useAppState()`; dot + label for 4 states (connecting=gray, open=green, reconnecting=amber+animate-spin, closed=red); label `hidden xl:block`; display-only
+8. `client/src/components/InboxBadge/index.ts` — NEW: reads `inboxCount` + `blockerQueue` from `useAppState()`; hidden when count 0; amber `bg-amber-900 text-amber-300` when `blockerQueue.length > 0`; gray `bg-gray-700 text-gray-300` otherwise; text capped at `99+`
+9. `client/src/components/TopBar.tsx` — render `<ConnectionStatus />` before `CycleControls`; render `<InboxBadge />` inside the Inbox tab button; no other TopBar changes
+10. `client/src/components/CycleProgressBar/index.ts` — NEW: 7-step bar; `StepIndicator` 6 states (pending/active/active-parallel/complete/failed/skipped) with correct classes; `StepMeta` below step after completion (`${elapsed}s · ${tokens}K · $${cost}`, `— · —` when token_count 0); artifact `↗` link calls `onArtifactClick(phase)`, `cursor-not-allowed` when no artifact_id; retry label `retry N/3` amber `text-[9px]` on active steps; `CycleCostSummary` hidden when no cycle, amber when spend > 80% of budget
+11. `client/src/components/AgentRail/index.ts` — NEW: 6 `AgentCard` components keyed by role; thinking/blocked/idle state classes; `current_task` `<p className="truncate" title={task}>` only when thinking; footer: relative `last_action_at` time + `last_phase_token_count` badge (hidden if 0); `ThoughtLogToggle` only when `thoughts.length > 0`; `ThoughtLogPanel` `max-h-48 overflow-y-auto`, per-entry expand (no accordion); thoughts from `events` filtered by `agent_role === role && event_type === 'thinking'`
+12. `client/src/components/FeedPanel.tsx` — add `FeedToolCallBlock` for `message_type === 'tool_call'`: collapsed header (⚙ + tool name + 50-char args preview + rotating chevron), expanded detail (pretty-printed JSON `<pre>` `max-h-56`); per-block expand state
+13. `client/src/components/BlockerModal/index.ts` — NEW: React portal to `document.body`, `z-50` fixed backdrop; focus trap `useEffect`; Escape + backdrop = no-op; conditional sections: reply textarea (`human_input`), `BlockerDiffView` with react-diff-view (`proposed_changes`), spend table (`budget_exceeded`); queue counter in header; submitting state disables all + spinner; inline error on failure; submit disabled when reply empty
+14. `client/src/components/ReconnectBanner/index.ts` — NEW: reads `wsStatus` from `useAppState()`; mounts on reconnecting or local `showReconnected`; on reconnecting→open: set `showReconnected = true` + `setTimeout(2000)` to clear; reconnecting: spinner + "Connection lost — reconnecting…"; reconnected: "Reconnected" for 2 s then unmounts
+15. `client/src/components/PinnedBlockerBanner/index.ts` — NEW: props `{ banners: Banner[], onDismiss: (id) => void }`; max 3 visible; priority `budget_warning > phase_retry > sse_reconnecting`; overflow row "and N more warnings"; dismiss × calls `onDismiss(id)`
+16. `client/src/components/SettingsView/index.ts` — NEW: `BudgetSection` with controlled number input; SaveButton disabled when unchanged or ≤ 0; `PUT /api/projects/:id/preferences` on save; `border-red-700` on invalid; "Saved" green flash 2 s; `SelfModSection` display-only "ENABLED" badge + helper text
+17. `client/src/components/ArtifactView/index.ts` — NEW: 7 `ArtifactPhaseTabs` (no-artifact tabs `cursor-default`); `CycleSelector` select; `ViewToggle` rendered/diff (diff disabled + tooltip when cycle 1); `ArtifactRendered` react-markdown with all element overrides; `ArtifactDiffView` using `createPatch` from `diff` pkg + `parseDiff` + `react-diff-view/esm` inside `.artifact-diff-view`; empty diff → "No changes between these cycles."; watch events for `artifact_save` → re-fetch + 3 s flash; copy via `navigator.clipboard`; download via blob URL
+18. `client/src/App.tsx` — wrap top-level JSX in `<AppStateProvider projectId={selectedProject.id}>`; remove all ad-hoc state now provided by context; remove dead `wsRef.current` reference (line 53); add `<CycleProgressBar onArtifactClick={...} />` below TopBar; replace `<AgentPanel />` with `<AgentRail />`; add CenterPanel tab bar (Feed | Artifacts) with `<FeedPanel />` / `<ArtifactView />`; remove `<ArtifactDrawer />`; add RightPanel tab bar (Inbox | Settings); mount `<BlockerModal />` from `blockerQueue[0]`; add `<ReconnectBanner />` and `<PinnedBlockerBanner />` in CenterPanel
+
+---
+
+## Commit Plan
+
+```
+Commit 1 — fix(db): add blocks_cycle + blocker columns to inbox_messages
+  Files: server/src/db.ts
+
+Commit 2 — chore(deps): add react-diff-view and diff to client
+  Files: client/package.json, bun.lock
+
+Commit 3 — feat(types): expand client types for Cycle 5
+  Files: client/src/types.ts
+
+Commit 4 — feat(css): add react-diff-view stylesheet and scoped overrides
+  Files: client/src/index.css
+
+Commit 5 — feat(hooks): add useSnapshot reducer with ring buffer
+  Files: client/src/hooks/useSnapshot.ts
+
+Commit 6 — feat(app-state): add AppStateProvider and useAppState
+  Files: client/src/components/AppState/index.ts
+
+Commit 7 — feat(connection-status): add ConnectionStatus component
+  Files: client/src/components/ConnectionStatus/index.ts
+
+Commit 8 — feat(inbox-badge): add InboxBadge component
+  Files: client/src/components/InboxBadge/index.ts
+
+Commit 9 — feat(topbar): wire ConnectionStatus and InboxBadge
+  Files: client/src/components/TopBar.tsx
+
+Commit 10 — feat(cycle-progress): implement CycleProgressBar
+  Files: client/src/components/CycleProgressBar/index.ts
+
+Commit 11 — feat(agent-rail): implement AgentRail with ThoughtLogPanel
+  Files: client/src/components/AgentRail/index.ts
+
+Commit 12 — feat(feed): add FeedToolCallBlock for tool_call events
+  Files: client/src/components/FeedPanel.tsx
+
+Commit 13 — feat(blockers): implement BlockerModal with focus trap and queue
+  Files: client/src/components/BlockerModal/index.ts
+
+Commit 14 — feat(banners): add ReconnectBanner and PinnedBlockerBanner
+  Files: client/src/components/ReconnectBanner/index.ts
+         client/src/components/PinnedBlockerBanner/index.ts
+
+Commit 15 — feat(settings): implement SettingsView
+  Files: client/src/components/SettingsView/index.ts
+
+Commit 16 — feat(artifacts): implement ArtifactView with diff support
+  Files: client/src/components/ArtifactView/index.ts
+
+Commit 17 — feat(app): rewire App with AppStateProvider and all new components
+  Files: client/src/App.tsx
+```
+
+---
+
+## Open Questions
+
+1. **`react-diff-view` ESM/Vite compat (GH#3 — still unresolved):** Must verify `import { parseDiff, Diff, Hunk } from 'react-diff-view/esm'` resolves under Vite 5 in Commit 2. If not, fallback to `react-diff-viewer-continued` and update Commits 13 and 16.
+2. **`phaseStates` derivation:** `cycle.phase_outcomes` is a JSON array. `useSnapshot` must map it to `Record<string, PhaseState>` on the SNAPSHOT action — no new server column needed.
+3. **Reply submission is REST not WS:** `BlockerModal` submit calls `POST /api/projects/:id/inbox/:msgId/reply` via REST. The `send()` from context is for keepalive pings only. Confirm before Commit 13.
+4. **`blocks_cycle` filter:** `useSnapshot` BLOCKER reducer appends only messages where `blocks_cycle === 1`. Server snapshot does not pre-filter — client filters on receipt.

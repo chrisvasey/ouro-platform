@@ -1,0 +1,255 @@
+# Implementation Plan — Ouro Platform Cycle 5
+
+*Developer agent | 2026-03-28*
+
+---
+
+## File Structure
+
+```
+server/src/
+  db.ts        MODIFY — extend EventType union; add inbox_messages try/catch migrations
+  loop.ts      MODIFY — cycle-level insertEvent calls; phase_meta + blocker WS broadcasts
+  index.ts     MODIFY — extend buildWsSnapshotPayload() with phaseStates, activeRole, blockerQueue
+
+client/
+  package.json    MODIFY — bun add react-diff-view diff @types/diff
+  src/
+    index.css     MODIFY — react-diff-view stylesheet import + .artifact-diff-view overrides (10 rules)
+    types.ts      MODIFY — add AgentRole, PhaseStatus, PhaseState, PhaseMeta, ThoughtEntry,
+                           Banner, SnapshotPayload, AppState; extend Agent + InboxMessage; update WsMessage
+    App.tsx       MODIFY — wrap in AppStateProvider; remove dead wsRef; mount all new components
+    hooks/
+      useSnapshot.ts           NEW
+    components/
+      AppState/index.tsx       NEW — AppStateProvider + AppStateContext + useAppState()
+      ConnectionStatus/index.tsx  NEW
+      InboxBadge/index.tsx     NEW
+      CycleProgressBar/index.tsx  NEW
+      AgentRail/index.tsx      NEW
+      BlockerModal/index.tsx   NEW
+      ArtifactView/index.tsx   NEW
+      ReconnectBanner/index.tsx   NEW
+      PinnedBlockerBanner/index.tsx  NEW
+      SettingsView/index.tsx   NEW
+      TopBar.tsx               MODIFY
+      FeedPanel.tsx            MODIFY
+      InboxPanel.tsx           MODIFY — add resolved-blocker visual state
+```
+
+---
+
+## Data Shapes
+
+```typescript
+// ── types.ts additions / extensions ─────────────────────────────────────────
+
+export type AgentRole = "pm" | "researcher" | "designer" | "developer" | "tester" | "documenter";
+
+// Extend existing Agent
+export interface Agent {
+  id: string; project_id: string; role: AgentRole;
+  status: "idle" | "thinking" | "blocked" | "done";
+  current_task: string | null; last_action_at: number | null;
+  last_phase_token_count: number;   // derived client-side from events
+}
+
+// Extend existing InboxMessage (add 4 columns)
+export interface InboxMessage {
+  // ...existing fields unchanged...
+  blocks_cycle: number;                         // 1 = pauses cycle
+  blocker_sub_type: string | null;              // budget_warning | phase_escalated | …
+  proposed_diff: string | null;                 // unified diff string for BlockerDiffView
+  spend_summary: Record<string, number> | null; // { total_usd, budget_usd, percent }
+}
+
+export type PhaseStatus = "pending" | "active" | "active-parallel" | "complete" | "failed" | "skipped";
+
+export interface PhaseState {
+  phase: string; status: PhaseStatus;
+  started_at: number | null; ended_at: number | null;
+  token_count: number; cost_usd: number;
+  artifact_id: string | null; retry_count: number;
+}
+
+export interface PhaseMeta {
+  phase: string; status: PhaseState["status"];
+  token_count: number; cost_usd: number; artifact_id: string | null;
+}
+
+export interface ThoughtEntry {
+  id: string;             // DbEvent.id
+  agent_role: AgentRole;
+  summary: string;        // first 120 chars of thinking block
+  full_text: string; created_at: number;
+}
+
+export interface Banner {
+  id: string;
+  type: "budget_warning" | "phase_retry" | "sse_reconnecting";
+  message: string; dismissed: boolean;
+}
+
+export interface SnapshotPayload {   // emitted on WS subscribe + reconnect
+  cycle: CycleRun | null; events: DbEvent[]; agents: Agent[];
+  activeRole: AgentRole | null; inboxCount: number;
+  phaseStates: PhaseState[]; blockerQueue: InboxMessage[];
+  artifacts: Artifact[]; budgetDailyUsd: number; todaySpendUsd: number;
+}
+
+export interface AppState extends SnapshotPayload {
+  thoughts: ThoughtEntry[];   // derived: events where event_type==='thinking'
+  banners: Banner[];
+  hydrated: boolean; wsStatus: WsStatus; sendWs: (msg: unknown) => void;
+}
+
+export type WsMessage =
+  | { type: "snapshot"; data: SnapshotPayload }
+  | { type: "agent_event"; data: DbEvent }
+  | { type: "phase_meta"; data: PhaseMeta }
+  | { type: "blocker"; data: InboxMessage }
+  | { type: "proposed_change_resolved"; data: { id: string } };
+```
+
+---
+
+## API Contract
+
+### REST (all existing — no new routes needed)
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/projects` | — | `Project[]` |
+| POST | `/api/projects` | `{ name, description? }` | `Project` |
+| GET | `/api/projects/:id` | — | `Project` |
+| GET | `/api/projects/:id/feed?limit` | — | `FeedMessage[]` |
+| GET | `/api/projects/:id/inbox` | — | `InboxMessage[]` |
+| POST | `/api/projects/:id/inbox/:msgId/reply` | `{ body }` | `InboxMessage` |
+| GET | `/api/projects/:id/agents` | — | `Agent[]` |
+| GET | `/api/projects/:id/artifacts` | — | `Artifact[]` |
+| GET | `/api/projects/:id/artifacts/:phase` | — | `Artifact` or 404 |
+| POST | `/api/projects/:id/cycle/start` | — | `{ ok, message }` |
+| POST | `/api/projects/:id/cycle/stop` | — | `{ ok, message }` |
+| GET | `/api/projects/:id/cycles` | — | `CycleRun[]` |
+| GET | `/api/projects/:id/events?limit&offset&cycleId` | — | `{ events, total }` |
+| PUT | `/api/projects/:id/preferences` | `{ budget_daily_usd }` | `{ ok }` |
+
+### WebSocket server → client
+
+| type | Payload | When emitted |
+|---|---|---|
+| `snapshot` | `SnapshotPayload` | On WS subscribe; on reconnect |
+| `agent_event` | `DbEvent` | Each `insertEvent()` call |
+| `phase_meta` | `PhaseMeta` | Phase start / complete / failed |
+| `blocker` | `InboxMessage` | When `blocks_cycle=1` inbox msg created |
+| `proposed_change_resolved` | `{ id }` | On reply to proposed_changes blocker |
+| legacy `feed_message` etc. | unchanged | Kept for backward compat |
+
+### WebSocket client → server
+
+- `{ type: "subscribe", projectId }` — triggers snapshot emission + project filter
+
+---
+
+## Key Functions
+
+- **`db.ts`**: extend `EventType` union; 4× `try { db.run('ALTER TABLE inbox_messages ADD COLUMN …') } catch {}`
+- **`loop.ts`**: `insertEvent` at cycle_started/stopped/complete/error; `broadcastFn('phase_meta',…)` on phase start/complete/failed; `broadcastFn('blocker', inboxMsg)` when blocks_cycle=1; `insertEvent({event_type:'thinking'})` after agent calls with thinkingContent
+- **`index.ts` `buildWsSnapshotPayload()`**: add `derivePhaseStates(cycle)` helper; include `activeRole`, `blockerQueue`, `budgetDailyUsd`, `todaySpendUsd`
+- **`useSnapshot(lastMessage)`**: `useReducer`; 50-item ring buffer `useRef<WsMessage[]>([])` flushed on first SNAPSHOT; AGENT_EVENT prepends (cap 200) + extracts ThoughtEntry; PHASE_META upserts; BLOCKER appends if `blocks_cycle===1` (dedup); PROPOSED_CHANGE_RESOLVED removes
+- **`useAppState()`**: throws `Error("useAppState must be used inside AppStateProvider")` when context null
+- **`AppStateProvider`**: composes `useWebSocket(projectId)` + `useSnapshot(lastMessage)`; no global spinner
+- **`createPatch(filename, old, new)`**: from `diff` npm pkg; produces unified diff string
+- **`parseDiff(str)`**: from `react-diff-view/esm`; unified diff → hunks array for `<Diff viewType="unified">`
+
+---
+
+## Component Breakdown
+
+- **`useSnapshot`** — SNAPSHOT replaces all + hydrates + flushes ring; AGENT_EVENT prepends + updates agent fields + extracts ThoughtEntry; PHASE_META upserts `phaseStates[phase]`; BLOCKER appends (dedup by id); PROPOSED_CHANGE_RESOLVED removes from `blockerQueue`
+- **`AppStateProvider`** — merges both hooks; each child owns its own skeleton state
+- **`ConnectionStatus`** — display-only dot+label; `animate-spin` on reconnecting; label `hidden xl:block`
+- **`InboxBadge`** — returns null when count=0; amber when `blockerQueue.length > 0`; `"99+"` cap
+- **`CycleProgressBar`** — maps `['research','spec','design','build','test','review']`; StepIndicator 6 states; StepMeta `"Xm Ys · 1.2K · $0.18"` or `"— · —"` (token_count=0); `↗` calls `onArtifactClick` when `artifact_id != null`; CycleCostSummary amber at >80% budget
+- **`AgentRail`** — 6 AgentCards; thinking/blocked/idle classes; `current_task` `<p truncate title={task}>`; thoughts from `events` filtered by role+type; ThoughtLogPanel `max-h-48`; per-entry expand
+- **`FeedPanel`** — `FeedToolCallBlock` when `message_type==='tool_call'`; collapsed: ⚙+name+50-char preview+chevron; expanded: `<pre max-h-56>`; `expandedIds: Set<string>`
+- **`BlockerModal`** — `createPortal(document.body)`; focus trap; Escape+backdrop = no-op; shows `blockerQueue[0]`; `"1 of N"` counter; human_input→textarea, proposed_changes→diff, budget_exceeded→spend table; `POST /inbox/:id/reply`; inline error on failure
+- **`ArtifactView`** — phase tabs; CycleSelector; ViewToggle Rendered|Diff (Diff disabled on cycle 1); `createPatch`→`parseDiff`→`<Diff viewType="unified">`; empty hunks → "No changes"; `artifact_save` events → re-fetch + 3s flash; copy + download
+- **`ReconnectBanner`** — on `reconnecting→open`: `showReconnected=true`+`setTimeout(2000)`; null in steady open
+- **`PinnedBlockerBanner`** — props `{banners, onDismiss}`; priority sort; slice `[0,3]`; overflow row
+- **`SettingsView`** — controlled number input; `PUT /preferences`; success flash 2s; SelfModSection display-only
+- **`TopBar`** — add `<ConnectionStatus/>` before CycleControls; `<InboxBadge/>` inside Inbox tab button
+- **`App.tsx`** — remove lines 52–55 (`wsRef.current`); remove local feed/inbox/agent state; wrap in `<AppStateProvider>`; add CycleProgressBar below TopBar; replace AgentPanel→AgentRail; CenterPanel Feed|Artifacts tabs; RightPanel Inbox|Settings tabs; mount BlockerModal+ReconnectBanner+PinnedBlockerBanner
+
+---
+
+## Commit Plan
+
+```
+Commit 1  fix(db): extend EventType + inbox_messages blocker columns
+  server/src/db.ts — add cycle_started|cycle_complete|cycle_stopped|cycle_error to EventType
+                   — 4× try/catch ALTER TABLE inbox_messages ADD COLUMN
+
+Commit 2  fix(server): cycle events, snapshot extension, phase_meta broadcasts
+  server/src/loop.ts — insertEvent at 4 cycle milestones; broadcastFn phase_meta + blocker;
+                       insertEvent thinking events after agent calls
+  server/src/index.ts — extend buildWsSnapshotPayload()
+
+Commit 3  feat(types): expand client types for Cycle 5
+  client/src/types.ts
+
+Commit 4  chore(deps): add react-diff-view, diff, @types/diff
+  client/package.json + bun.lock
+  client/src/index.css — stylesheet import + .artifact-diff-view 10 CSS overrides
+
+Commit 5  feat(hooks): add useSnapshot reducer with ring buffer
+  client/src/hooks/useSnapshot.ts
+
+Commit 6  feat(context): add AppStateProvider and useAppState
+  client/src/components/AppState/index.tsx
+
+Commit 7  feat(ui): add ConnectionStatus and InboxBadge
+  client/src/components/ConnectionStatus/index.tsx
+  client/src/components/InboxBadge/index.tsx
+
+Commit 8  feat(ui): add CycleProgressBar
+  client/src/components/CycleProgressBar/index.tsx
+
+Commit 9  feat(ui): add AgentRail with thought log panels
+  client/src/components/AgentRail/index.tsx
+
+Commit 10 feat(ui): add BlockerModal portal
+  client/src/components/BlockerModal/index.tsx
+
+Commit 11 feat(ui): add ArtifactView with diff
+  client/src/components/ArtifactView/index.tsx
+
+Commit 12 feat(ui): add ReconnectBanner and PinnedBlockerBanner
+  client/src/components/ReconnectBanner/index.tsx
+  client/src/components/PinnedBlockerBanner/index.tsx
+
+Commit 13 feat(ui): add SettingsView
+  client/src/components/SettingsView/index.tsx
+
+Commit 14 fix(feed): add FeedToolCallBlock
+  client/src/components/FeedPanel.tsx
+
+Commit 15 fix(topbar): wire ConnectionStatus and InboxBadge
+  client/src/components/TopBar.tsx
+
+Commit 16 fix(inbox): resolved-blocker visual state
+  client/src/components/InboxPanel.tsx
+
+Commit 17 refactor(app): rewire App.tsx with AppStateProvider
+  client/src/App.tsx
+```
+
+---
+
+## Open Questions
+
+1. **react-diff-view ESM/Vite compat (GH#3):** Verify `import { parseDiff, Diff, Hunk } from 'react-diff-view/esm'` resolves under Vite 5 before Commit 4. Fallback: add `optimizeDeps.include: ['react-diff-view']` to `vite.config.ts`, or swap to `react-diff-viewer-continued`.
+2. **`thinking` events:** Agents don't emit `thinking` events yet. Commit 2 must add `insertEvent({event_type:'thinking'})` after each agent call that returns `result.thinkingContent`.
+3. **`blocks_cycle` pause loop:** loop.ts needs a polling mechanism (1s interval, 10-min timeout) to wait on `replied_at` before continuing. Confirm design before Commit 2.
+4. **`last_phase_token_count`:** Derive client-side from most recent `phase_complete` event for the role. Add as DB column in Cycle 6 if needed.
+5. **`GET /preferences`:** Not needed — include `budgetDailyUsd` in WS snapshot payload (Commit 2 via `buildWsSnapshotPayload`).

@@ -60,11 +60,12 @@ export async function runResearcher(
   onFeed?: (message: string) => void
 ): Promise<AgentResult> {
   const systemPrompt = loadPrompt("researcher");
-  const contextBlock = buildContextBlock(projectId, taskDescription);
 
   const project = getProject(projectId);
   const projectName = project?.name ?? projectId;
   const projectDesc = project?.description ?? taskDescription;
+  // Researcher only needs the project brief — not CLAUDE.md or feed history (keeps prompt small)
+  const contextBlock = `Project: ${projectName}\nDescription: ${projectDesc}\nTask: ${taskDescription}`;
 
   // ─── Step 1: Search planning ──────────────────────────────────────────────────
   console.log("[researcher] Step 1: Search planning...");

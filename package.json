@@ -8,6 +8,7 @@
     "dev": "bun run server/src/index.ts",
     "dev:client": "cd client && bun run dev",
     "db:reset": "bun run server/src/db.ts --reset",
-    "seed": "bun run server/src/seed.ts"
+    "seed": "bun run server/src/seed.ts",
+    "ouro": "bun run server/src/cli.ts"
   }
 }

@@ -145,7 +145,7 @@ export async function runDeveloper(
 
   // Fall back to a single synthetic chunk if step 1 returned no parseable lines
   const chunks =
-    taskLines.length > 0 ? chunkArray(taskLines, 3) : [["(implement core application features)"]];
+    taskLines.length > 0 ? chunkArray(taskLines, 6) : [["(implement core application features)"]];
 
   const implementationNotes: string[] = [];
 
@@ -171,6 +171,7 @@ export async function runDeveloper(
     implementationNotes.push(notes);
     onFeed?.(`[Developer → All] Tasks ${startIdx}–${endIdx} planned`);
     console.log(`[developer] Step 3 chunk ${i + 1}/${chunks.length} complete`);
+    await new Promise(r => setTimeout(r, 2500)); // rate limit buffer
   }
 
   // ─── Step 4: Assemble build.md ───────────────────────────────────────────────

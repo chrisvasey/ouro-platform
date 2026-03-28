@@ -330,7 +330,11 @@ async function runPlaywrightTests(
 
   let browser: any;
   try {
-    browser = await chromium.launch({ headless: true, timeout: 15_000 });
+    browser = await chromium.launch({
+      headless: true,
+      timeout: 30_000,
+      executablePath: process.env.CHROMIUM_EXECUTABLE ?? "/usr/bin/chromium-browser",
+    });
   } catch (err) {
     console.warn("[tester] Chromium launch failed:", (err as Error).message);
     return { storyResults, playwrightAvailable: false };

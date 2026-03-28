@@ -50,7 +50,17 @@ import { runDocumenter } from "./agents/documenter.js";
 import type { AgentResult } from "./agents/base.js";
 
 /** Each agent call has at most this long before it is considered timed out. */
-const PHASE_TIMEOUT_MS = 5 * 60 * 1000;
+// Per-phase timeout budgets — build takes longer due to multi-step chunking
+const PHASE_TIMEOUTS: Record<string, number> = {
+  research:  12 * 60 * 1000,  // 12 min — 3 web searches × 2-3 min each + synthesis
+  build:     15 * 60 * 1000,  // 15 min — multi-step: decompose + arch + N chunks + assemble
+  design:     8 * 60 * 1000,  //  8 min — 3 steps × 2 min each
+  spec:       4 * 60 * 1000,  //  4 min
+  test:       5 * 60 * 1000,  //  5 min — Playwright runs
+  review:     4 * 60 * 1000,  //  4 min
+};
+const DEFAULT_PHASE_TIMEOUT = 5 * 60 * 1000;
+const getPhaseTimeout = (phase: string) => PHASE_TIMEOUTS[phase] ?? DEFAULT_PHASE_TIMEOUT;
 
 // Map from phase name → agent role (for status updates)
 const phaseToRole: Record<string, string> = {
@@ -390,11 +400,12 @@ async function runAgentWithTimeout(
   taskDescription: string,
   onFeed?: (message: string) => void
 ): Promise<AgentResult> {
+  const phaseTimeout = getPhaseTimeout(phase);
   const makeTimeoutPromise = () =>
     new Promise<never>((_, reject) =>
       setTimeout(
-        () => reject(new Error(`Phase ${phase} timed out after ${PHASE_TIMEOUT_MS / 1000}s`)),
-        PHASE_TIMEOUT_MS
+        () => reject(new Error(`Phase ${phase} timed out after ${phaseTimeout / 1000}s`)),
+        phaseTimeout
       )
     );
 

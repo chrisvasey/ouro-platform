@@ -3,9 +3,16 @@ import type { Agent } from "../types";
 import { api } from "../api";
 import { relativeTime } from "../utils";
 
+export interface AgentActionEntry {
+  status: string;
+  ts: number;
+}
+
 interface AgentPanelProps {
   projectId: string;
   agentUpdates: Agent[];
+  /** Last N action entries per role, keyed by role name */
+  agentHistory: Record<string, AgentActionEntry[]>;
 }
 
 const AGENT_EMOJI: Record<string, string> = {
@@ -53,7 +60,38 @@ function StatusBadge({ status }: { status: Agent["status"] }) {
   );
 }
 
-export function AgentPanel({ projectId, agentUpdates }: AgentPanelProps) {
+/** Mini sparkline: last 5 actions as coloured dots (oldest → newest, left → right) */
+function ActivitySparkline({ history }: { history: AgentActionEntry[] }) {
+  if (history.length === 0) return null;
+
+  const DOT_COLOUR: Record<string, string> = {
+    thinking: "bg-blue-400",
+    idle: "bg-gray-600",
+    blocked: "bg-amber-400",
+  };
+
+  const visible = history.slice(-5);
+
+  return (
+    <div className="flex items-center gap-1" title="Last 5 actions (oldest → newest)">
+      {visible.map((entry, i) => {
+        const isLatest = i === visible.length - 1;
+        const colour = DOT_COLOUR[entry.status] ?? "bg-gray-600";
+        return (
+          <span
+            key={i}
+            className={`rounded-full ${colour} ${
+              isLatest ? "w-2 h-2 opacity-100" : "w-1.5 h-1.5 opacity-40"
+            }`}
+            title={`${entry.status} · ${relativeTime(entry.ts)}`}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+export function AgentPanel({ projectId, agentUpdates, agentHistory }: AgentPanelProps) {
   const [agents, setAgents] = useState<Agent[]>([]);
 
   useEffect(() => {
@@ -88,42 +126,56 @@ export function AgentPanel({ projectId, agentUpdates }: AgentPanelProps) {
         {sorted.length === 0 && (
           <p className="text-xs text-gray-600 p-2">No agents for this project.</p>
         )}
-        {sorted.map((agent) => (
-          <div
-            key={agent.id}
-            className={`rounded-lg p-3 border transition-colors ${
-              agent.status === "thinking"
-                ? "border-blue-800 bg-blue-950/30"
-                : agent.status === "blocked"
-                ? "border-amber-800 bg-amber-950/20"
-                : "border-gray-800 bg-gray-900"
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-base leading-none">
-                  {AGENT_EMOJI[agent.role] ?? "🤖"}
-                </span>
-                <span className="text-xs font-medium text-gray-300">
-                  {AGENT_LABEL[agent.role] ?? agent.role}
-                </span>
+        {sorted.map((agent) => {
+          const history = agentHistory[agent.role] ?? [];
+          return (
+            <div
+              key={agent.id}
+              className={`rounded-lg p-3 border transition-colors ${
+                agent.status === "thinking"
+                  ? "border-blue-800 bg-blue-950/30"
+                  : agent.status === "blocked"
+                  ? "border-amber-800 bg-amber-950/20"
+                  : "border-gray-800 bg-gray-900"
+              }`}
+            >
+              {/* Row 1: emoji + name + status badge */}
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base leading-none">
+                    {AGENT_EMOJI[agent.role] ?? "🤖"}
+                  </span>
+                  <span className="text-xs font-medium text-gray-300">
+                    {AGENT_LABEL[agent.role] ?? agent.role}
+                  </span>
+                </div>
+                <StatusBadge status={agent.status as Agent["status"]} />
               </div>
-              <StatusBadge status={agent.status as Agent["status"]} />
+
+              {/* Row 2: current task (only while thinking) */}
+              {agent.current_task && agent.status === "thinking" && (
+                <p
+                  className="text-xs text-gray-500 leading-snug mt-1 truncate"
+                  title={agent.current_task}
+                >
+                  {agent.current_task.slice(0, 60)}…
+                </p>
+              )}
+
+              {/* Row 3: last action timestamp + activity sparkline */}
+              <div className="flex items-center justify-between mt-2 gap-1">
+                {agent.last_action_at ? (
+                  <p className="text-[10px] text-gray-600">
+                    Last active {relativeTime(agent.last_action_at)}
+                  </p>
+                ) : (
+                  <span />
+                )}
+                <ActivitySparkline history={history} />
+              </div>
             </div>
-
-            {agent.current_task && agent.status === "thinking" && (
-              <p className="text-xs text-gray-500 leading-snug mt-1 truncate" title={agent.current_task}>
-                {agent.current_task.slice(0, 60)}…
-              </p>
-            )}
-
-            {agent.last_action_at && (
-              <p className="text-xs text-gray-600 mt-1">
-                {relativeTime(agent.last_action_at)}
-              </p>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );

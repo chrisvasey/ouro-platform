@@ -92,6 +92,27 @@ const runningCycles = new Set<string>();
 /** Project IDs that have been requested to stop after the current phase */
 const stoppingCycles = new Set<string>();
 
+/**
+ * Per-project mutex: maps projectId → tail of the promise chain.
+ * Every cycle start chains onto the previous promise for that project,
+ * guaranteeing at most one active cycle per project at any time.
+ */
+const cycleMutex = new Map<string, Promise<void>>();
+
+/**
+ * Acquire a mutex for a project. Returns a release function.
+ * Callers must call release() in a finally block.
+ */
+function acquireMutex(projectId: string): Promise<() => void> {
+  let release!: () => void;
+  const current = cycleMutex.get(projectId) ?? Promise.resolve();
+  const next = current.then(
+    () => new Promise<void>((resolve) => { release = resolve; })
+  );
+  cycleMutex.set(projectId, next.catch(() => {})); // swallow so chain never breaks
+  return current.then(() => release);
+}
+
 /** Event emitter for broadcasting real-time updates */
 type BroadcastFn = (projectId: string, event: string, data: unknown) => void;
 let broadcast: BroadcastFn = () => {};
@@ -121,12 +142,19 @@ export function stopCycle(projectId: string): boolean {
  * Rejects only on unexpected setup errors (project not found, already running).
  */
 export async function runCycle(projectId: string): Promise<void> {
-  if (runningCycles.has(projectId)) {
-    throw new Error(`Cycle already running for project ${projectId}`);
-  }
-
   const project = getProject(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
+
+  // Acquire per-project mutex — prevents concurrent cycles even under
+  // rapid-fire requests (resolves the TOCTOU race on runningCycles).
+  const release = await acquireMutex(projectId);
+
+  // Re-check inside the mutex (another caller may have started between
+  // the HTTP handler check and acquiring the lock).
+  if (runningCycles.has(projectId)) {
+    release();
+    throw new Error(`Cycle already running for project ${projectId}`);
+  }
 
   runningCycles.add(projectId);
 
@@ -343,6 +371,7 @@ export async function runCycle(projectId: string): Promise<void> {
     throw err;
   } finally {
     runningCycles.delete(projectId);
+    release();
     stoppingCycles.delete(projectId);
   }
 }

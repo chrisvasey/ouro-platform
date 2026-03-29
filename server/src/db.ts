@@ -649,6 +649,20 @@ export function getBudgetLimit(projectId: string): number {
   return pref ? parseFloat(pref) : 10;
 }
 
+
+// ─── Events ──────────────────────────────────────────────────────────────────
+
+export interface DbEvent {
+  projectId: string;
+  type: string;
+  payload?: Record<string, unknown>;
+}
+
+export function insertEvent(event: DbEvent): void {
+  // Events table not implemented — no-op for now
+  // TODO: implement events table for token tracking
+}
+
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
 
 if (import.meta.main) {

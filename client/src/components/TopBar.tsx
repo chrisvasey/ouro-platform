@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import type { Project } from "../types";
+import React, { useEffect, useRef, useState } from "react";
+import type { CycleRun, Project, SpendData } from "../types";
 import { api } from "../api";
 
 interface TopBarProps {
@@ -8,9 +8,12 @@ interface TopBarProps {
   onSelectProject: (project: Project) => void;
   onProjectsChange: (projects: Project[]) => void;
   cycleRunning: boolean;
+  cycleHistory: CycleRun[];
   onStartCycle: () => void;
   onStopCycle: () => void;
 }
+
+const PHASE_ORDER = ["research", "spec", "design", "build", "test", "review"];
 
 const PHASE_LABELS: Record<string, string> = {
   research: "Research",
@@ -22,15 +25,91 @@ const PHASE_LABELS: Record<string, string> = {
   complete: "Complete",
 };
 
-const PHASE_COLOURS: Record<string, string> = {
-  research: "bg-purple-900 text-purple-300",
-  spec: "bg-blue-900 text-blue-300",
-  design: "bg-pink-900 text-pink-300",
-  build: "bg-cyan-900 text-cyan-300",
-  test: "bg-yellow-900 text-yellow-300",
-  review: "bg-green-900 text-green-300",
-  complete: "bg-gray-800 text-gray-400",
-};
+function spendColour(pct: number): string {
+  if (pct >= 100) return "text-red-400 font-bold";
+  if (pct >= 80) return "text-orange-400 font-medium";
+  if (pct >= 50) return "text-amber-400";
+  return "text-gray-500";
+}
+
+function SpendIndicator({ projectId }: { projectId: string }) {
+  const [spend, setSpend] = useState<SpendData | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function fetchSpend() {
+    api.spend.get(projectId).then(setSpend).catch(() => {});
+  }
+
+  useEffect(() => {
+    fetchSpend();
+    intervalRef.current = setInterval(fetchSpend, 30_000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [projectId]);
+
+  if (!spend) return null;
+
+  const pct = spend.budgetLimit > 0 ? (spend.spendToday / spend.budgetLimit) * 100 : 0;
+  const cls = spendColour(pct);
+
+  return (
+    <span className={`text-xs tabular-nums ${cls}`} title="Daily spend vs budget">
+      ${spend.spendToday.toFixed(2)} / ${spend.budgetLimit.toFixed(2)} today
+    </span>
+  );
+}
+
+interface PhaseStepBarProps {
+  currentPhase: string | null;
+  cycleHistory: CycleRun[];
+}
+
+function PhaseStepBar({ currentPhase, cycleHistory }: PhaseStepBarProps) {
+  // Determine phase statuses from the latest cycle (if any)
+  const latestCycle = cycleHistory[0] ?? null;
+  const outcomeMap = new Map(
+    (latestCycle?.phase_outcomes ?? []).map((o) => [o.phase, o.status])
+  );
+
+  const currentIdx = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1;
+
+  return (
+    <div className="flex items-center gap-0.5">
+      {PHASE_ORDER.map((phase, idx) => {
+        const outcome = outcomeMap.get(phase);
+        const isActive = phase === currentPhase;
+        const isCompleted = outcome === "complete" || (!isActive && currentIdx > idx && currentIdx !== -1);
+        const isFailed = outcome === "error";
+
+        let icon: React.ReactNode = null;
+        let labelClass = "text-gray-600";
+
+        if (isActive) {
+          labelClass = "text-white font-bold";
+        } else if (isFailed) {
+          icon = <span className="text-red-400 mr-0.5">✗</span>;
+          labelClass = "text-red-400";
+        } else if (isCompleted) {
+          icon = <span className="text-green-400 mr-0.5">✓</span>;
+          labelClass = "text-green-400";
+        }
+
+        return (
+          <React.Fragment key={phase}>
+            {idx > 0 && (
+              <span className="text-gray-700 text-[10px] mx-0.5">›</span>
+            )}
+            <span className={`text-[11px] flex items-center ${labelClass}`}>
+              {icon}
+              {PHASE_LABELS[phase]}
+            </span>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
 
 export function TopBar({
   projects,
@@ -38,6 +117,7 @@ export function TopBar({
   onSelectProject,
   onProjectsChange,
   cycleRunning,
+  cycleHistory,
   onStartCycle,
   onStopCycle,
 }: TopBarProps) {
@@ -52,7 +132,6 @@ export function TopBar({
     setCreating(true);
     try {
       const project = await api.projects.create(newName.trim(), newDesc.trim() || undefined);
-      // Seed agents for new project via server seed — or just add to list
       const updated = await api.projects.list();
       onProjectsChange(updated);
       onSelectProject(project);
@@ -67,8 +146,6 @@ export function TopBar({
   }
 
   const phase = selectedProject?.current_phase;
-  const phaseLabel = phase ? (PHASE_LABELS[phase] ?? phase) : null;
-  const phaseClass = phase ? (PHASE_COLOURS[phase] ?? "bg-gray-800 text-gray-400") : null;
 
   return (
     <header className="h-12 bg-gray-900 border-b border-gray-800 flex items-center px-4 gap-4 flex-shrink-0">
@@ -108,14 +185,22 @@ export function TopBar({
         </button>
       </div>
 
-      {/* Phase badge */}
-      {phaseLabel && phaseClass && (
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${phaseClass}`}>
-          {phaseLabel}
-        </span>
+      {/* Phase step bar — shown when a cycle is active */}
+      {(phase || cycleHistory.length > 0) && selectedProject && (
+        <div className="flex items-center">
+          <PhaseStepBar
+            currentPhase={phase ?? null}
+            cycleHistory={cycleHistory}
+          />
+        </div>
       )}
 
       <div className="flex-1" />
+
+      {/* Spend indicator */}
+      {selectedProject && (
+        <SpendIndicator projectId={selectedProject.id} />
+      )}
 
       {/* Cycle control buttons */}
       {selectedProject && !cycleRunning && (

@@ -18,6 +18,8 @@ import {
   sendInboxMessage,
   postFeedMessage,
   listProjects,
+  listProposedChanges,
+  createProposedChange,
   AGENT_ROLES,
 } from "./db.js";
 
@@ -129,6 +131,30 @@ export async function seed(): Promise<void> {
     console.log(`[seed] Food Delivery App created (id: ${food.id})`);
   } else {
     console.log("[seed] Food Delivery App already exists, skipping.");
+  }
+
+  // Seed a demo pending proposed change for UI testing
+  const ouroProject = listProjects().find((p) => p.slug === "ouro-platform");
+  if (ouroProject) {
+    const existing = listProposedChanges(ouroProject.id, "PENDING");
+    if (existing.length === 0) {
+      createProposedChange(
+        ouroProject.id,
+        "developer",
+        "server/src/agents/developer.ts",
+        `import { runClaude } from "../claude.js";
+import type { AgentResult } from "./base.js";
+
+export async function runDeveloper(projectId: string, task: string): Promise<AgentResult> {
+  const result = await runClaude({
+    system: "You are a senior developer. Implement the requested changes.",
+    messages: [{ role: "user", content: task }],
+  });
+  return { content: result.content, thinking: result.thinking };
+}`
+      );
+      console.log("[seed] Created demo pending proposed change for ouro-platform.");
+    }
   }
 
   console.log("[seed] Done.");

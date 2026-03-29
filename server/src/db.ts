@@ -128,22 +128,25 @@ db.run(`
 `);
 
 db.run(`
-  CREATE TABLE IF NOT EXISTS events (
-    id          TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL,
-    cycle_id    TEXT,
-    event_type  TEXT NOT NULL,
-    agent_role  TEXT,
-    payload     TEXT NOT NULL DEFAULT '{}',
-    token_count INTEGER NOT NULL DEFAULT 0,
-    cost_usd    REAL NOT NULL DEFAULT 0,
-    created_at  INTEGER NOT NULL
+  CREATE TABLE IF NOT EXISTS proposed_changes (
+    id           TEXT PRIMARY KEY,
+    cycle_id     TEXT,
+    project_id   TEXT NOT NULL,
+    proposed_by  TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    diff_content TEXT NOT NULL,
+    status       TEXT DEFAULT 'PENDING',
+    reviewed_at  INTEGER,
+    created_at   INTEGER NOT NULL
   )
 `);
 
-try { db.run("CREATE INDEX IF NOT EXISTS idx_events_project_id ON events (project_id)"); } catch { /* already exists */ }
-try { db.run("CREATE INDEX IF NOT EXISTS idx_events_cycle_id ON events (cycle_id)"); } catch { /* already exists */ }
-try { db.run("CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type)"); } catch { /* already exists */ }
+// Migrate existing feed_messages to add thinking column
+try {
+  db.run("ALTER TABLE feed_messages ADD COLUMN thinking TEXT");
+} catch {
+  // Column already exists — ignore
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -568,98 +571,82 @@ export function listCycles(projectId: string): CycleRun[] {
   return rows.map(parseCycleRow);
 }
 
-// ─── Events ──────────────────────────────────────────────────────────────────
+// ─── Proposed Changes ────────────────────────────────────────────────────────
 
-export type EventType =
-  | "phase_started"
-  | "phase_completed"
-  | "agent_started"
-  | "agent_completed"
-  | "agent_failed"
-  | "error"
-  | "human_input_requested"
-  | "human_input_received";
-
-export interface InsertEventParams {
-  projectId: string;
-  cycleId?: string;
-  type: EventType;
-  agentRole?: string;
-  payload: Record<string, unknown>;
-  tokenCount?: number;
-  costUsd?: number;
-}
-
-export interface Event {
+export interface ProposedChange {
   id: string;
-  project_id: string;
   cycle_id: string | null;
-  type: EventType;
-  agent_role: string | null;
-  payload: Record<string, unknown>;
-  token_count: number;
-  cost_usd: number;
+  project_id: string;
+  proposed_by: string;
+  file_path: string;
+  diff_content: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  reviewed_at: number | null;
   created_at: number;
 }
 
-interface DbEvent {
-  id: string;
-  project_id: string;
-  cycle_id: string | null;
-  event_type: string;
-  agent_role: string | null;
-  payload: string;
-  token_count: number;
-  cost_usd: number;
-  created_at: number;
-}
-
-function parseEventRow(row: DbEvent): Event {
-  return {
-    id: row.id,
-    project_id: row.project_id,
-    cycle_id: row.cycle_id,
-    type: row.event_type as EventType,
-    agent_role: row.agent_role,
-    payload: JSON.parse(row.payload) as Record<string, unknown>,
-    token_count: row.token_count,
-    cost_usd: row.cost_usd,
-    created_at: row.created_at,
-  };
-}
-
-export function insertEvent(params: InsertEventParams): Event {
+export function createProposedChange(
+  projectId: string,
+  proposedBy: string,
+  filePath: string,
+  diffContent: string,
+  cycleId?: string
+): ProposedChange {
   const id = newId();
   const ts = now();
-  const tokenCount = params.tokenCount ?? 0;
-  const costUsd = params.costUsd ?? 0;
   db.run(
-    `INSERT INTO events (id, project_id, cycle_id, event_type, agent_role, payload, token_count, cost_usd, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, params.projectId, params.cycleId ?? null, params.type, params.agentRole ?? null, JSON.stringify(params.payload), tokenCount, costUsd, ts]
+    `INSERT INTO proposed_changes (id, cycle_id, project_id, proposed_by, file_path, diff_content, status, reviewed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'PENDING', NULL, ?)`,
+    [id, cycleId ?? null, projectId, proposedBy, filePath, diffContent, ts]
   );
-  return {
-    id,
-    project_id: params.projectId,
-    cycle_id: params.cycleId ?? null,
-    type: params.type,
-    agent_role: params.agentRole ?? null,
-    payload: params.payload,
-    token_count: tokenCount,
-    cost_usd: costUsd,
-    created_at: ts,
-  };
+  return { id, cycle_id: cycleId ?? null, project_id: projectId, proposed_by: proposedBy, file_path: filePath, diff_content: diffContent, status: "PENDING", reviewed_at: null, created_at: ts };
 }
 
-export function getEvents(projectId: string, cycleId?: string): Event[] {
-  const rows = cycleId
-    ? db.query<DbEvent, [string, string]>(
-        "SELECT * FROM events WHERE project_id = ? AND cycle_id = ? ORDER BY created_at ASC"
-      ).all(projectId, cycleId)
-    : db.query<DbEvent, [string]>(
-        "SELECT * FROM events WHERE project_id = ? ORDER BY created_at ASC"
-      ).all(projectId);
-  return rows.map(parseEventRow);
+export function listProposedChanges(projectId: string, status?: string): ProposedChange[] {
+  if (status) {
+    return db
+      .query<ProposedChange, [string, string]>(
+        "SELECT * FROM proposed_changes WHERE project_id = ? AND status = ? ORDER BY created_at DESC"
+      )
+      .all(projectId, status);
+  }
+  return db
+    .query<ProposedChange, [string]>(
+      "SELECT * FROM proposed_changes WHERE project_id = ? ORDER BY created_at DESC"
+    )
+    .all(projectId);
+}
+
+export function updateProposedChangeStatus(
+  changeId: string,
+  status: "APPROVED" | "REJECTED"
+): void {
+  db.run(
+    "UPDATE proposed_changes SET status = ?, reviewed_at = ? WHERE id = ?",
+    [status, now(), changeId]
+  );
+}
+
+// ─── Artifact versions ───────────────────────────────────────────────────────
+
+export function getArtifactVersions(projectId: string, phase: string): Artifact[] {
+  return db
+    .query<Artifact, [string, string]>(
+      "SELECT * FROM artifacts WHERE project_id = ? AND phase = ? ORDER BY version DESC"
+    )
+    .all(projectId, phase);
+}
+
+// ─── Spend / Budget ──────────────────────────────────────────────────────────
+
+export function getSpendToday(_projectId: string): number {
+  // No events table yet — return 0
+  return 0;
+}
+
+export function getBudgetLimit(projectId: string): number {
+  const pref = getPreference(projectId, "token_budget_daily_usd");
+  return pref ? parseFloat(pref) : 10;
 }
 
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
@@ -668,7 +655,7 @@ if (import.meta.main) {
   const args = Bun.argv.slice(2);
   if (args.includes("--reset")) {
     console.log("Dropping and recreating database...");
-    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles", "events"];
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles", "proposed_changes"];
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`);
     }

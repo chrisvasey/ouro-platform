@@ -1,8 +1,8 @@
 # Research Report
 
-*Prepared by: Researcher agent | Date: 2026-03-29 | Cycle 9*
+*Prepared by: Researcher agent | Date: 2026-03-29 | Cycle 10*
 
-> **Scope note:** Cycle 8 findings remain valid in full. Cycle 9 search pass (five queries: multi-agent software dev framework OSS 2025, AI coding agent competitors, agentic workflow orchestration TypeScript, self-improving AI architecture patterns, agent-based software factory UI patterns) confirmed all prior recommendations and added: **Ouroboros** (self-modifying agent with multi-model review gate, Feb 2026), **AWS Kiro** (agentic IDE, spec-driven), **GitHub Spec Kit** (spec-at-centre workflow for coding agents), and **VS Code Multi-Agent Sessions view** (Feb 2026) as new UI pattern reference. No architectural reversals.
+> **Scope note:** Cycle 9 findings remain valid in full. Cycle 10 search pass (five queries: multi-agent AI software development framework 2025 OSS, self-improving autonomous coding agent loop architecture, AI software agency competitors Devin SWE-agent AutoCodeRover comparison, multi-role agent orchestration patterns LLM tool use structured output, agent-based software development UI patterns transparency observability) confirmed all prior recommendations. No new competitors or architectural reversals identified. One library recommendation reinforced: `react-diff-view` (confirmed ESM/Vite compatible via `/esm` subpath, v3.1.0+) remains the correct choice over `@git-diff-view/react` (pre-1.0, ESM compat unverified for Vite). No architectural reversals.
 
 ---
 

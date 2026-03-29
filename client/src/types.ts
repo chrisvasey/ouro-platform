@@ -24,6 +24,24 @@ export interface FeedMessage {
   recipient: string;
   content: string;
   message_type: "handoff" | "question" | "decision" | "note" | "escalate";
+  thinking?: string | null;
+  created_at: number;
+}
+
+export interface SpendData {
+  spendToday: number;
+  budgetLimit: number;
+}
+
+export interface ProposedChange {
+  id: string;
+  cycle_id: string | null;
+  project_id: string;
+  proposed_by: string;
+  file_path: string;
+  diff_content: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  reviewed_at: number | null;
   created_at: number;
 }
 
@@ -72,4 +90,5 @@ export type WsEvent =
   | { event: "inbox_message"; projectId: string; data: InboxMessage }
   | { event: "agent_status"; projectId: string; data: { role: string; status: string; current_task?: string | null } }
   | { event: "phase_change"; projectId: string; data: { phase: string } }
-  | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } };
+  | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } }
+  | { event: "proposed_change_resolved"; projectId: string; data: { id: string; status: string } };

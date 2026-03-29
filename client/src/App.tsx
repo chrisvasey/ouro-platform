@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Agent, CycleRun, FeedMessage, InboxMessage, Project, WsEvent } from "./types";
+import type { Agent, CycleRun, FeedMessage, InboxMessage, Project, ProposedChange, WsEvent } from "./types";
 import { api } from "./api";
 import { TopBar } from "./components/TopBar";
 import { AgentPanel, type AgentActionEntry } from "./components/AgentPanel";
 import { FeedPanel } from "./components/FeedPanel";
 import { InboxPanel } from "./components/InboxPanel";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
+import { ProposedChangeModal } from "./components/ProposedChangeModal";
 
 // BASE_URL is '/ouro/' in production and '/' in dev (set by vite base option).
 const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${import.meta.env.BASE_URL}ws`;
@@ -24,6 +25,7 @@ export default function App() {
 
   // Artifact drawer state: which phase to show (null = closed)
   const [artifactDrawerPhase, setArtifactDrawerPhase] = useState<string | null>(null);
+  const [proposedChanges, setProposedChanges] = useState<ProposedChange[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const currentProjectIdRef = useRef<string | null>(null);
 
@@ -48,6 +50,7 @@ export default function App() {
     setCycleHistory([]);
     setAgentHistory({});
     setArtifactDrawerPhase(null);
+    setProposedChanges([]);
 
     // Subscribe WS to this project
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -58,11 +61,13 @@ export default function App() {
       api.feed.list(selectedProject.id),
       api.inbox.list(selectedProject.id),
       api.cycle.history(selectedProject.id),
-    ]).then(([feed, inbox, cycles]) => {
+      api.proposedChanges.list(selectedProject.id, "PENDING"),
+    ]).then(([feed, inbox, cycles, changes]) => {
       if (currentProjectIdRef.current === selectedProject.id) {
         setFeedMessages(feed);
         setInboxMessages(inbox);
         setCycleHistory(cycles);
+        setProposedChanges(changes);
       }
     }).catch(console.error);
   }, [selectedProject?.id]);
@@ -167,6 +172,13 @@ export default function App() {
       // Re-fetch cycle history to get the final record
       api.cycle.history(pid).then(setCycleHistory).catch(console.error);
     }
+
+    if (payload.event === "proposed_change_resolved") {
+      if (payload.projectId !== pid) return;
+      setProposedChanges((prev) =>
+        prev.filter((c) => c.id !== (payload.data as { id: string }).id)
+      );
+    }
   }
 
   // ── Start cycle ────────────────────────────────────────────────────────────
@@ -203,6 +215,7 @@ export default function App() {
         onSelectProject={setSelectedProject}
         onProjectsChange={setProjects}
         cycleRunning={cycleRunning}
+        cycleHistory={cycleHistory}
         onStartCycle={handleStartCycle}
         onStopCycle={handleStopCycle}
       />
@@ -235,6 +248,17 @@ export default function App() {
           projectId={selectedProject.id}
           phase={artifactDrawerPhase}
           onClose={() => setArtifactDrawerPhase(null)}
+        />
+      )}
+
+      {/* Proposed change modal — shows when there are pending proposed changes */}
+      {proposedChanges.length > 0 && selectedProject && (
+        <ProposedChangeModal
+          projectId={selectedProject.id}
+          change={proposedChanges[0]}
+          onResolved={(id) =>
+            setProposedChanges((prev) => prev.filter((c) => c.id !== id))
+          }
         />
       )}
     </div>

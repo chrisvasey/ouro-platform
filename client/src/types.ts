@@ -92,3 +92,7 @@ export type WsEvent =
   | { event: "phase_change"; projectId: string; data: { phase: string } }
   | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } }
   | { event: "proposed_change_resolved"; projectId: string; data: { id: string; status: string } };
+
+export type WsStatus = "connecting" | "open" | "reconnecting" | "connected" | "disconnected";
+
+export interface WsMessage { type: string; event?: string; data?: unknown; projectId?: string; }

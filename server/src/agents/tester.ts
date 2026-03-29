@@ -16,9 +16,9 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getProject, getArtifactByPhase, postFeedMessage } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
-const APP_URL = process.env.APP_URL ?? "http://localhost:3007";
+const APP_URL = process.env.APP_URL ?? "https://lucial.noodlefish-carat.ts.net/ouro/";
 const SCREENSHOT_DIR = "/tmp";
 const PAGE_TIMEOUT = 10_000;
 
@@ -537,6 +537,7 @@ export async function runTester(projectId: string, taskDescription: string, cycl
     let playwrightAvailable = false;
     let inputTokens = 0;
     let outputTokens = 0;
+    let totalCost = 0;
 
     if (stories.length === 0) {
       // No structured stories — fall back to Claude-generated report
@@ -554,6 +555,8 @@ export async function runTester(projectId: string, taskDescription: string, cycl
       content = result.content;
       inputTokens = result.inputTokens ?? 0;
       outputTokens = result.outputTokens ?? 0;
+      totalCost = result.costUsd;
+      await dispatchToolUses(projectId, result.toolUses, "tester", cycleId);
     } else {
       const { storyResults, playwrightAvailable: pw } = await runPlaywrightTests(stories, timestamp);
       playwrightAvailable = pw;
@@ -574,7 +577,7 @@ export async function runTester(projectId: string, taskDescription: string, cycl
       "note"
     );
 
-    emitAgentCompleted(meta, { inputTokens, outputTokens });
+    emitAgentCompleted(meta, { inputTokens, outputTokens, costUsd: totalCost });
     return { content, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

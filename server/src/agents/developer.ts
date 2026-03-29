@@ -24,12 +24,12 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getArtifactByPhase } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 /** Per-step timeout: 150 seconds. Each micro-call has its own independent budget. */
 const STEP_TIMEOUT_MS = 150_000;
 
-interface StepResult { content: string; inputTokens: number; outputTokens: number }
+interface StepResult { content: string; inputTokens: number; outputTokens: number; costUsd: number; toolUses: Array<{ id: string; name: string; input: unknown }> }
 
 /**
  * Run a single Claude micro-call with one automatic retry on timeout.
@@ -39,7 +39,7 @@ interface StepResult { content: string; inputTokens: number; outputTokens: numbe
 async function runStep(opts: Parameters<typeof runClaude>[0]): Promise<StepResult> {
   const attempt = async (): Promise<StepResult> => {
     const result = await runClaude({ ...opts, timeoutMs: STEP_TIMEOUT_MS });
-    return { content: result.content, inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0 };
+    return { content: result.content, inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0, costUsd: result.costUsd, toolUses: result.toolUses };
   };
 
   try {
@@ -51,7 +51,7 @@ async function runStep(opts: Parameters<typeof runClaude>[0]): Promise<StepResul
         return await attempt();
       } catch {
         console.warn("[developer] Step timed out again — continuing with empty output");
-        return { content: "", inputTokens: 0, outputTokens: 0 };
+        return { content: "", inputTokens: 0, outputTokens: 0, costUsd: 0, toolUses: [] };
       }
     }
     throw err;
@@ -95,6 +95,7 @@ export async function runDeveloper(
 
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCost = 0;
 
   try {
     const systemPrompt = loadPrompt("developer");
@@ -125,7 +126,8 @@ export async function runDeveloper(
     ].join("\n");
 
     const step1 = await runStep({ systemPrompt, userPrompt: step1Prompt });
-    totalInput += step1.inputTokens; totalOutput += step1.outputTokens;
+    totalInput += step1.inputTokens; totalOutput += step1.outputTokens; totalCost += step1.costUsd;
+    await dispatchToolUses(projectId, step1.toolUses, "developer", cycleId);
     const taskList = step1.content;
     const taskLines = parseTaskLines(taskList);
     const taskCount = taskLines.length > 0 ? taskLines.length : "several";
@@ -149,7 +151,8 @@ export async function runDeveloper(
     ].join("\n");
 
     const step2 = await runStep({ systemPrompt, userPrompt: step2Prompt });
-    totalInput += step2.inputTokens; totalOutput += step2.outputTokens;
+    totalInput += step2.inputTokens; totalOutput += step2.outputTokens; totalCost += step2.costUsd;
+    await dispatchToolUses(projectId, step2.toolUses, "developer", cycleId);
     const architectureDoc = step2.content;
     console.log("[developer] Step 2 complete");
 
@@ -181,7 +184,8 @@ export async function runDeveloper(
       ].join("\n");
 
       const step3 = await runStep({ systemPrompt, userPrompt: step3Prompt });
-      totalInput += step3.inputTokens; totalOutput += step3.outputTokens;
+      totalInput += step3.inputTokens; totalOutput += step3.outputTokens; totalCost += step3.costUsd;
+      await dispatchToolUses(projectId, step3.toolUses, "developer", cycleId);
       implementationNotes.push(step3.content);
       onFeed?.(`[Developer → All] Tasks ${startIdx}–${endIdx} planned`);
       console.log(`[developer] Step 3 chunk ${i + 1}/${chunks.length} complete`);
@@ -212,7 +216,8 @@ export async function runDeveloper(
     ].join("\n");
 
     const step4 = await runStep({ systemPrompt, userPrompt: step4Prompt });
-    totalInput += step4.inputTokens; totalOutput += step4.outputTokens;
+    totalInput += step4.inputTokens; totalOutput += step4.outputTokens; totalCost += step4.costUsd;
+    await dispatchToolUses(projectId, step4.toolUses, "developer", cycleId);
     onFeed?.("[Developer → All] build.md assembled — implementation plan complete");
     console.log("[developer] Step 4 complete — build.md ready");
 
@@ -226,7 +231,7 @@ export async function runDeveloper(
     console.log("[developer] TODO: Real Claude Code subprocess would run here");
     console.log("[developer] Would commit implementation to project git repo and return SHA");
 
-    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput });
+    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput, costUsd: totalCost });
     return { content, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

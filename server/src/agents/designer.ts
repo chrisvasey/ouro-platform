@@ -12,7 +12,7 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getArtifactByPhase } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 const STEP_TIMEOUT_MS = 120_000;
 
@@ -27,6 +27,7 @@ export async function runDesigner(
 
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCost = 0;
 
   try {
     const systemPrompt = loadPrompt("designer");
@@ -55,6 +56,8 @@ export async function runDesigner(
       flows = r.content;
       totalInput += r.inputTokens ?? 0;
       totalOutput += r.outputTokens ?? 0;
+      totalCost += r.costUsd;
+      await dispatchToolUses(projectId, r.toolUses, "designer", cycleId);
       onFeed?.(`[Designer → All] User flows mapped — ${flows.split("\n").filter(l => l.match(/^\d+\./) ).length} steps across all flows`);
     } catch (e: unknown) {
       onFeed?.("[Designer → All] Flow mapping timed out — using story titles as flows");
@@ -73,6 +76,8 @@ export async function runDesigner(
       components = r.content;
       totalInput += r.inputTokens ?? 0;
       totalOutput += r.outputTokens ?? 0;
+      totalCost += r.costUsd;
+      await dispatchToolUses(projectId, r.toolUses, "designer", cycleId);
       onFeed?.("[Designer → All] Component breakdown done");
     } catch (e: unknown) {
       onFeed?.("[Designer → All] Component step timed out — using minimal spec");
@@ -91,6 +96,8 @@ export async function runDesigner(
       designMd = r.content;
       totalInput += r.inputTokens ?? 0;
       totalOutput += r.outputTokens ?? 0;
+      totalCost += r.costUsd;
+      await dispatchToolUses(projectId, r.toolUses, "designer", cycleId);
     } catch (e: unknown) {
       // Assemble from parts if final call times out
       designMd = `# Design Spec\n\n## User Flows\n${flows}\n\n## Components\n${components}\n\n*(Final assembly timed out — see above sections)*`;
@@ -99,7 +106,7 @@ export async function runDesigner(
     onFeed?.("[Designer → Dev] design.md ready — handing off to Developer");
 
     const summary = extractSummary(designMd);
-    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput });
+    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput, costUsd: totalCost });
     return { content: designMd, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

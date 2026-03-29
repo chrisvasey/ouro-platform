@@ -5,7 +5,8 @@
  * project context injected at the start of every prompt.
  */
 
-import { getProject, getArtifactByFilename, getFeedMessages, insertEvent } from "../db.js";
+import { getProject, getArtifactByFilename, getFeedMessages, insertEvent, saveArtifact, postFeedMessage, sendInboxMessage } from "../db.js";
+import type { ClaudeRunResult } from "../claude.js";
 
 export interface AgentResult {
   /** Full markdown content to save as artifact */
@@ -32,15 +33,37 @@ export function emitAgentStarted(meta: AgentEventMeta, task: string): void {
 
 export function emitAgentCompleted(
   meta: AgentEventMeta,
-  tokens: { inputTokens: number; outputTokens: number }
+  tokens: { inputTokens: number; outputTokens: number; costUsd: number }
 ): void {
   insertEvent({
     projectId: meta.projectId,
     cycleId: meta.cycleId,
     type: "agent_completed",
     agentRole: meta.agentRole,
-    payload: { inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens },
+    payload: { inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, costUsd: tokens.costUsd },
+    tokenCount: tokens.inputTokens + tokens.outputTokens,
+    costUsd: tokens.costUsd,
   });
+}
+
+export async function dispatchToolUses(
+  projectId: string,
+  toolUses: ClaudeRunResult["toolUses"],
+  agentRole: string,
+  cycleId?: string
+): Promise<void> {
+  for (const { name, input } of toolUses) {
+    const inp = input as Record<string, unknown>;
+    if (name === "save_artifact") {
+      await saveArtifact(projectId, inp.phase as string, inp.filename as string, inp.content as string, cycleId);
+    } else if (name === "post_feed_message") {
+      postFeedMessage(projectId, agentRole, inp.recipient as string, inp.content as string, inp.message_type as string);
+    } else if (name === "request_human_input") {
+      sendInboxMessage(projectId, agentRole, inp.subject as string, inp.body as string, 1);
+    } else {
+      console.warn("[base] unknown tool use:", name);
+    }
+  }
 }
 
 export function emitAgentFailed(meta: AgentEventMeta, err: Error): void {

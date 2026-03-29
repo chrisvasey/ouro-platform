@@ -8,7 +8,7 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { listArtifacts, saveArtifact } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 export async function runDocumenter(projectId: string, taskDescription: string, cycleId?: string): Promise<AgentResult> {
   const meta = { projectId, cycleId, agentRole: "documenter" };
@@ -32,10 +32,12 @@ export async function runDocumenter(projectId: string, taskDescription: string, 
     const content = result.content;
     const summary = extractSummary(content);
 
+    await dispatchToolUses(projectId, result.toolUses, "documenter", cycleId);
+
     // Save the output as CLAUDE.md (Documenter owns this file)
     await saveArtifact(projectId, "review", "CLAUDE.md", content, cycleId);
 
-    emitAgentCompleted(meta, { inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0 });
+    emitAgentCompleted(meta, { inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0, costUsd: result.costUsd });
     return { content, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

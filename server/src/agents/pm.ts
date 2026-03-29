@@ -8,7 +8,7 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { sendInboxMessage } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 export async function runPM(projectId: string, taskDescription: string, cycleId?: string): Promise<AgentResult> {
   const meta = { projectId, cycleId, agentRole: "pm" };
@@ -19,6 +19,7 @@ export async function runPM(projectId: string, taskDescription: string, cycleId?
     const userPrompt = buildContextBlock(projectId, taskDescription);
 
     const result = await runClaude({ systemPrompt, userPrompt });
+    await dispatchToolUses(projectId, result.toolUses, "pm", cycleId);
 
     const content = result.content;
     const summary = extractSummary(content);
@@ -31,7 +32,7 @@ export async function runPM(projectId: string, taskDescription: string, cycleId?
       `The PM has completed the spec phase.\n\n${summary}\n\n---\nFull spec saved as artifact. Reply with any changes before the Designer starts.`
     );
 
-    emitAgentCompleted(meta, { inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0 });
+    emitAgentCompleted(meta, { inputTokens: result.inputTokens ?? 0, outputTokens: result.outputTokens ?? 0, costUsd: result.costUsd });
     return { content, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

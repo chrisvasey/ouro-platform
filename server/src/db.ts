@@ -68,6 +68,13 @@ try {
   // Column already exists — ignore
 }
 
+// Migrate: add blocks_cycle — 0=non-blocking, 1=blocks loop until replied
+try {
+  db.run("ALTER TABLE inbox_messages ADD COLUMN blocks_cycle INTEGER NOT NULL DEFAULT 0");
+} catch {
+  // Column already exists — ignore
+}
+
 // Artifact versioning columns (Cycle 8)
 try { db.run("ALTER TABLE artifacts ADD COLUMN cycle_id TEXT"); } catch { /* already exists */ }
 try { db.run("ALTER TABLE artifacts ADD COLUMN previous_version_id TEXT"); } catch { /* already exists */ }
@@ -279,6 +286,7 @@ export interface InboxMessage {
   replied_at: number | null;
   reply_body: string | null;
   reply_intent_json: string | null;
+  blocks_cycle: number;
   created_at: number;
 }
 
@@ -286,16 +294,17 @@ export function sendInboxMessage(
   projectId: string,
   senderRole: string,
   subject: string,
-  body: string
+  body: string,
+  blocksCycle = 0
 ): InboxMessage {
   const id = newId();
   const ts = now();
   db.run(
-    `INSERT INTO inbox_messages (id, project_id, sender_role, subject, body, is_read, replied_at, reply_body, reply_intent_json, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?)`,
-    [id, projectId, senderRole, subject, body, ts]
+    `INSERT INTO inbox_messages (id, project_id, sender_role, subject, body, is_read, replied_at, reply_body, reply_intent_json, blocks_cycle, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, ?)`,
+    [id, projectId, senderRole, subject, body, blocksCycle, ts]
   );
-  return { id, project_id: projectId, sender_role: senderRole, subject, body, is_read: 0, replied_at: null, reply_body: null, reply_intent_json: null, created_at: ts };
+  return { id, project_id: projectId, sender_role: senderRole, subject, body, is_read: 0, replied_at: null, reply_body: null, reply_intent_json: null, blocks_cycle: blocksCycle, created_at: ts };
 }
 
 export function getInboxMessages(projectId: string): InboxMessage[] {
@@ -577,6 +586,8 @@ export interface InsertEventParams {
   type: EventType;
   agentRole?: string;
   payload: Record<string, unknown>;
+  tokenCount?: number;
+  costUsd?: number;
 }
 
 export interface Event {
@@ -586,6 +597,8 @@ export interface Event {
   type: EventType;
   agent_role: string | null;
   payload: Record<string, unknown>;
+  token_count: number;
+  cost_usd: number;
   created_at: number;
 }
 
@@ -609,6 +622,8 @@ function parseEventRow(row: DbEvent): Event {
     type: row.event_type as EventType,
     agent_role: row.agent_role,
     payload: JSON.parse(row.payload) as Record<string, unknown>,
+    token_count: row.token_count,
+    cost_usd: row.cost_usd,
     created_at: row.created_at,
   };
 }
@@ -616,10 +631,12 @@ function parseEventRow(row: DbEvent): Event {
 export function insertEvent(params: InsertEventParams): Event {
   const id = newId();
   const ts = now();
+  const tokenCount = params.tokenCount ?? 0;
+  const costUsd = params.costUsd ?? 0;
   db.run(
-    `INSERT INTO events (id, project_id, cycle_id, event_type, agent_role, payload, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, params.projectId, params.cycleId ?? null, params.type, params.agentRole ?? null, JSON.stringify(params.payload), ts]
+    `INSERT INTO events (id, project_id, cycle_id, event_type, agent_role, payload, token_count, cost_usd, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, params.projectId, params.cycleId ?? null, params.type, params.agentRole ?? null, JSON.stringify(params.payload), tokenCount, costUsd, ts]
   );
   return {
     id,
@@ -628,6 +645,8 @@ export function insertEvent(params: InsertEventParams): Event {
     type: params.type,
     agent_role: params.agentRole ?? null,
     payload: params.payload,
+    token_count: tokenCount,
+    cost_usd: costUsd,
     created_at: ts,
   };
 }

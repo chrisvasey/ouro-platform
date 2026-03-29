@@ -23,6 +23,7 @@ import {
   setPreference,
   listCycles,
   insertEvent,
+  getEvents,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
@@ -173,6 +174,14 @@ const app = new Elysia()
     const artifact = getArtifactByPhase(params.id, params.phase);
     if (!artifact) return error(404, { message: "Artifact not found" });
     return artifact;
+  })
+
+  // ── Events ──
+  .get("/api/projects/:id/events", ({ params, query, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { error: "Project not found" });
+    const events = getEvents(params.id, query.cycleId as string | undefined);
+    return { events };
   })
 
   // ── Cycle ──

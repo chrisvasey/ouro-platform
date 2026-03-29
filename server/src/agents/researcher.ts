@@ -13,7 +13,7 @@
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getProject } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 /** Per-step timeout: 150 seconds — web search is slower than build tasks. */
 const STEP_TIMEOUT_MS = 210_000;
@@ -22,6 +22,8 @@ interface StepResult {
   content: string;
   inputTokens: number;
   outputTokens: number;
+  costUsd: number;
+  toolUses: Array<{ id: string; name: string; input: unknown }>;
 }
 
 /**
@@ -36,6 +38,8 @@ async function runStep(opts: Parameters<typeof runClaude>[0], label: string): Pr
       content: result.content,
       inputTokens: result.inputTokens ?? 0,
       outputTokens: result.outputTokens ?? 0,
+      costUsd: result.costUsd,
+      toolUses: result.toolUses,
     };
   };
 
@@ -48,7 +52,7 @@ async function runStep(opts: Parameters<typeof runClaude>[0], label: string): Pr
         return await attempt();
       } catch {
         console.warn(`[researcher] ${label} timed out again — continuing with empty output`);
-        return { content: "", inputTokens: 0, outputTokens: 0 };
+        return { content: "", inputTokens: 0, outputTokens: 0, costUsd: 0, toolUses: [] };
       }
     }
     throw err;
@@ -83,6 +87,7 @@ export async function runResearcher(
 
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCost = 0;
 
   try {
     // ─── Step 1: Search planning ──────────────────────────────────────────────────
@@ -101,6 +106,8 @@ export async function runResearcher(
     const step1 = await runStep({ systemPrompt, userPrompt: step1Prompt }, "Step 1");
     totalInput += step1.inputTokens;
     totalOutput += step1.outputTokens;
+    totalCost += step1.costUsd;
+    await dispatchToolUses(projectId, step1.toolUses, "researcher", cycleId);
     console.log("[researcher] Step 1 complete");
 
     // ─── Step 2: Web research (3 sequential calls) ────────────────────────────────
@@ -137,6 +144,8 @@ export async function runResearcher(
       );
       totalInput += step2.inputTokens;
       totalOutput += step2.outputTokens;
+      totalCost += step2.costUsd;
+      await dispatchToolUses(projectId, step2.toolUses, "researcher", cycleId);
       searchResults.push(`## ${label}\n${step2.content}`);
 
       const lineCount = step2.content.split("\n").filter((l) => l.trim().startsWith("-")).length;
@@ -169,6 +178,8 @@ export async function runResearcher(
     const step3 = await runStep({ systemPrompt, userPrompt: step3Prompt }, "Step 3");
     totalInput += step3.inputTokens;
     totalOutput += step3.outputTokens;
+    totalCost += step3.costUsd;
+    await dispatchToolUses(projectId, step3.toolUses, "researcher", cycleId);
     console.log("[researcher] Step 3 complete — research.md ready");
 
     const content =
@@ -177,7 +188,7 @@ export async function runResearcher(
 
     const summary = extractSummary(content);
 
-    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput });
+    emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput, costUsd: totalCost });
     return { content, summary };
   } catch (err) {
     emitAgentFailed(meta, err as Error);

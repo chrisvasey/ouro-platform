@@ -122,19 +122,21 @@ db.run(`
 
 db.run(`
   CREATE TABLE IF NOT EXISTS events (
-    id         TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    cycle_id   TEXT,
-    type       TEXT NOT NULL,
-    agent_role TEXT,
-    payload    TEXT NOT NULL DEFAULT '{}',
-    created_at INTEGER NOT NULL
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    cycle_id    TEXT,
+    event_type  TEXT NOT NULL,
+    agent_role  TEXT,
+    payload     TEXT NOT NULL DEFAULT '{}',
+    token_count INTEGER NOT NULL DEFAULT 0,
+    cost_usd    REAL NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
   )
 `);
 
 try { db.run("CREATE INDEX IF NOT EXISTS idx_events_project_id ON events (project_id)"); } catch { /* already exists */ }
 try { db.run("CREATE INDEX IF NOT EXISTS idx_events_cycle_id ON events (cycle_id)"); } catch { /* already exists */ }
-try { db.run("CREATE INDEX IF NOT EXISTS idx_events_type ON events (type)"); } catch { /* already exists */ }
+try { db.run("CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type)"); } catch { /* already exists */ }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -591,17 +593,23 @@ interface DbEvent {
   id: string;
   project_id: string;
   cycle_id: string | null;
-  type: string;
+  event_type: string;
   agent_role: string | null;
   payload: string;
+  token_count: number;
+  cost_usd: number;
   created_at: number;
 }
 
 function parseEventRow(row: DbEvent): Event {
   return {
-    ...row,
-    type: row.type as EventType,
+    id: row.id,
+    project_id: row.project_id,
+    cycle_id: row.cycle_id,
+    type: row.event_type as EventType,
+    agent_role: row.agent_role,
     payload: JSON.parse(row.payload) as Record<string, unknown>,
+    created_at: row.created_at,
   };
 }
 
@@ -609,7 +617,7 @@ export function insertEvent(params: InsertEventParams): Event {
   const id = newId();
   const ts = now();
   db.run(
-    `INSERT INTO events (id, project_id, cycle_id, type, agent_role, payload, created_at)
+    `INSERT INTO events (id, project_id, cycle_id, event_type, agent_role, payload, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, params.projectId, params.cycleId ?? null, params.type, params.agentRole ?? null, JSON.stringify(params.payload), ts]
   );

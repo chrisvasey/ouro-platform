@@ -51,7 +51,7 @@ export interface ClaudeRunResult {
   toolUses: ToolUse[];
 }
 
-// ── Pricing constants (claude-sonnet-4-6) ────────────────────────────────────
+// ── Pricing constants (claude-sonnet-4-5) ────────────────────────────────────
 
 const INPUT_PRICE_PER_MTOK  = 3;   // $3  per million input tokens
 const OUTPUT_PRICE_PER_MTOK = 15;  // $15 per million output tokens
@@ -113,21 +113,27 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
  * Token usage is read from response.usage and converted to costUsd.
  */
 export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult> {
-  const token =
-    process.env.ANTHROPIC_API_KEY ??
+  const apiKey =
+    process.env.ANTHROPIC_API_KEY;
+  const oauthToken =
     process.env.CLAUDE_CODE_OAUTH_TOKEN ??
     process.env.CLAUDE_OAUTH_TOKEN;
 
-  if (!token) {
+  if (!apiKey && !oauthToken) {
     console.warn("[claude] No auth token found — using mock output");
     return mockResult(opts.userPrompt);
   }
 
   const execute = async (): Promise<ClaudeRunResult> => {
-    const client = new Anthropic({ apiKey: token });
+    // OAuth tokens (sk-ant-oat01-*) must use authToken/Bearer auth.
+    // Standard API keys (sk-ant-api03-*) use apiKey/X-Api-Key auth.
+    const isOAuth = !apiKey && !!oauthToken;
+    const client = isOAuth
+      ? new Anthropic({ apiKey: null, authToken: oauthToken })
+      : new Anthropic({ apiKey: apiKey! });
 
     const createParams: Anthropic.MessageCreateParamsNonStreaming = {
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-5",
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       system: opts.systemPrompt,
       messages: [{ role: "user", content: opts.userPrompt }],

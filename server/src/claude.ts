@@ -29,6 +29,10 @@ export interface ClaudeRunResult {
   real: boolean;
   inputTokens?: number;
   outputTokens?: number;
+  /** Cost in USD (0 for mock output). */
+  costUsd: number;
+  /** Tool use calls parsed from the response (empty for plain text output). */
+  toolUses: Array<{ id: string; name: string; input: unknown }>;
 }
 
 /**
@@ -45,7 +49,7 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
 
   if (!token) {
     console.warn("[claude] No auth token — using mock output");
-    return { content: mockOutput(opts.userPrompt), real: false };
+    return { content: mockOutput(opts.userPrompt), real: false, costUsd: 0, toolUses: [] };
   }
 
   const execute = async (): Promise<ClaudeRunResult> => {
@@ -80,12 +84,14 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
     if (proc.exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text().catch(() => "");
       console.warn(`[claude] CLI exited ${proc.exitCode}: ${stderr.slice(0, 200)}`);
-      return { content: mockOutput(opts.userPrompt), real: false };
+      return { content: mockOutput(opts.userPrompt), real: false, costUsd: 0, toolUses: [] };
     }
 
     let content = "";
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let costUsd = 0;
+    const toolUses: Array<{ id: string; name: string; input: unknown }> = [];
 
     for (const line of raw.split("\n")) {
       const t = line.trim();
@@ -95,6 +101,9 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
         if (msg.type === "assistant" && msg.message?.content) {
           for (const b of msg.message.content) {
             if (b.type === "text") content += b.text;
+            if (b.type === "tool_use") {
+              toolUses.push({ id: b.id ?? "", name: b.name ?? "", input: b.input ?? {} });
+            }
           }
         }
         if (msg.type === "result") {
@@ -103,16 +112,17 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
             inputTokens = msg.usage.input_tokens;
             outputTokens = msg.usage.output_tokens;
           }
+          if (typeof msg.cost_usd === "number") costUsd = msg.cost_usd;
         }
       } catch { /* non-JSON lines ignored */ }
     }
 
     if (!content) {
       console.warn("[claude] Empty CLI response — using mock output");
-      return { content: mockOutput(opts.userPrompt), real: false };
+      return { content: mockOutput(opts.userPrompt), real: false, costUsd: 0, toolUses: [] };
     }
 
-    return { content: content.trim(), real: true, inputTokens, outputTokens };
+    return { content: content.trim(), real: true, inputTokens, outputTokens, costUsd, toolUses };
   };
 
   try {
@@ -130,7 +140,7 @@ export async function runClaude(opts: ClaudeRunOptions): Promise<ClaudeRunResult
   } catch (err: unknown) {
     if ((err as { timeout?: boolean }).timeout) throw err;
     console.warn("[claude] CLI call failed:", (err as Error).message);
-    return { content: mockOutput(opts.userPrompt), real: false };
+    return { content: mockOutput(opts.userPrompt), real: false, costUsd: 0, toolUses: [] };
   }
 }
 

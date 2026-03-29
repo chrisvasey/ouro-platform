@@ -19,9 +19,14 @@ import {
   getAgentsForProject,
   listArtifacts,
   getArtifactByPhase,
+  getArtifactVersions,
   postFeedMessage,
   setPreference,
   listCycles,
+  listProposedChanges,
+  updateProposedChangeStatus,
+  getSpendToday,
+  getBudgetLimit,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
@@ -162,6 +167,40 @@ const app = new Elysia()
     return getAgentsForProject(params.id);
   })
 
+  // ── Spend / Budget ──
+  .get("/api/projects/:id/spend", ({ params, error }) => {
+    const project = getProject(params.id);
+    if (!project) return error(404, { message: "Project not found" });
+    return {
+      spendToday: getSpendToday(params.id),
+      budgetLimit: getBudgetLimit(params.id),
+    };
+  })
+
+  // ── Proposed Changes ──
+  .get("/api/projects/:id/proposed-changes", ({ params, query }) => {
+    const status = query.status as string | undefined;
+    return listProposedChanges(params.id, status);
+  })
+
+  .post("/api/projects/:id/proposed-changes/:changeId/approve", ({ params, error }) => {
+    const changes = listProposedChanges(params.id);
+    const change = changes.find((c) => c.id === params.changeId);
+    if (!change) return error(404, { message: "Proposed change not found" });
+    updateProposedChangeStatus(params.changeId, "APPROVED");
+    broadcastToProject(params.id, "proposed_change_resolved", { id: params.changeId, status: "APPROVED" });
+    return { ok: true };
+  })
+
+  .post("/api/projects/:id/proposed-changes/:changeId/reject", ({ params, error }) => {
+    const changes = listProposedChanges(params.id);
+    const change = changes.find((c) => c.id === params.changeId);
+    if (!change) return error(404, { message: "Proposed change not found" });
+    updateProposedChangeStatus(params.changeId, "REJECTED");
+    broadcastToProject(params.id, "proposed_change_resolved", { id: params.changeId, status: "REJECTED" });
+    return { ok: true };
+  })
+
   // ── Artifacts ──
   .get("/api/projects/:id/artifacts", ({ params }) => {
     return listArtifacts(params.id);
@@ -171,6 +210,10 @@ const app = new Elysia()
     const artifact = getArtifactByPhase(params.id, params.phase);
     if (!artifact) return error(404, { message: "Artifact not found" });
     return artifact;
+  })
+
+  .get("/api/projects/:id/artifacts/:phase/versions", ({ params }) => {
+    return getArtifactVersions(params.id, params.phase);
   })
 
   // ── Cycle ──

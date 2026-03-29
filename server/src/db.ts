@@ -115,6 +115,27 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS proposed_changes (
+    id           TEXT PRIMARY KEY,
+    cycle_id     TEXT,
+    project_id   TEXT NOT NULL,
+    proposed_by  TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    diff_content TEXT NOT NULL,
+    status       TEXT DEFAULT 'PENDING',
+    reviewed_at  INTEGER,
+    created_at   INTEGER NOT NULL
+  )
+`);
+
+// Migrate existing feed_messages to add thinking column
+try {
+  db.run("ALTER TABLE feed_messages ADD COLUMN thinking TEXT");
+} catch {
+  // Column already exists — ignore
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function newId(): string {
@@ -486,13 +507,91 @@ export function listCycles(projectId: string): CycleRun[] {
   return rows.map(parseCycleRow);
 }
 
+// ─── Proposed Changes ────────────────────────────────────────────────────────
+
+export interface ProposedChange {
+  id: string;
+  cycle_id: string | null;
+  project_id: string;
+  proposed_by: string;
+  file_path: string;
+  diff_content: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  reviewed_at: number | null;
+  created_at: number;
+}
+
+export function createProposedChange(
+  projectId: string,
+  proposedBy: string,
+  filePath: string,
+  diffContent: string,
+  cycleId?: string
+): ProposedChange {
+  const id = newId();
+  const ts = now();
+  db.run(
+    `INSERT INTO proposed_changes (id, cycle_id, project_id, proposed_by, file_path, diff_content, status, reviewed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'PENDING', NULL, ?)`,
+    [id, cycleId ?? null, projectId, proposedBy, filePath, diffContent, ts]
+  );
+  return { id, cycle_id: cycleId ?? null, project_id: projectId, proposed_by: proposedBy, file_path: filePath, diff_content: diffContent, status: "PENDING", reviewed_at: null, created_at: ts };
+}
+
+export function listProposedChanges(projectId: string, status?: string): ProposedChange[] {
+  if (status) {
+    return db
+      .query<ProposedChange, [string, string]>(
+        "SELECT * FROM proposed_changes WHERE project_id = ? AND status = ? ORDER BY created_at DESC"
+      )
+      .all(projectId, status);
+  }
+  return db
+    .query<ProposedChange, [string]>(
+      "SELECT * FROM proposed_changes WHERE project_id = ? ORDER BY created_at DESC"
+    )
+    .all(projectId);
+}
+
+export function updateProposedChangeStatus(
+  changeId: string,
+  status: "APPROVED" | "REJECTED"
+): void {
+  db.run(
+    "UPDATE proposed_changes SET status = ?, reviewed_at = ? WHERE id = ?",
+    [status, now(), changeId]
+  );
+}
+
+// ─── Artifact versions ───────────────────────────────────────────────────────
+
+export function getArtifactVersions(projectId: string, phase: string): Artifact[] {
+  return db
+    .query<Artifact, [string, string]>(
+      "SELECT * FROM artifacts WHERE project_id = ? AND phase = ? ORDER BY version DESC"
+    )
+    .all(projectId, phase);
+}
+
+// ─── Spend / Budget ──────────────────────────────────────────────────────────
+
+export function getSpendToday(_projectId: string): number {
+  // No events table yet — return 0
+  return 0;
+}
+
+export function getBudgetLimit(projectId: string): number {
+  const pref = getPreference(projectId, "token_budget_daily_usd");
+  return pref ? parseFloat(pref) : 10;
+}
+
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────
 
 if (import.meta.main) {
   const args = Bun.argv.slice(2);
   if (args.includes("--reset")) {
     console.log("Dropping and recreating database...");
-    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles"];
+    const tables = ["projects", "agents", "feed_messages", "inbox_messages", "tasks", "artifacts", "preferences", "cycles", "proposed_changes"];
     for (const table of tables) {
       db.run(`DROP TABLE IF EXISTS ${table}`);
     }

@@ -1,4 +1,4 @@
-import type { Agent, Artifact, CycleRun, FeedMessage, InboxMessage, Project } from "./types";
+import type { Agent, Artifact, CycleRun, FeedMessage, InboxMessage, Project, ProposedChange, SpendData } from "./types";
 
 // In production (base: '/ouro/'), BASE_URL is '/ouro/' → BASE becomes '/ouro/api'.
 // In dev (base: '/'),            BASE_URL is '/'       → BASE becomes '/api'.
@@ -46,6 +46,20 @@ export const api = {
       get<Artifact[]>(`/projects/${projectId}/artifacts`),
     getByPhase: (projectId: string, phase: string) =>
       get<Artifact>(`/projects/${projectId}/artifacts/${phase}`),
+    versions: (projectId: string, phase: string) =>
+      get<Artifact[]>(`/projects/${projectId}/artifacts/${phase}/versions`),
+  },
+  spend: {
+    get: (projectId: string) =>
+      get<SpendData>(`/projects/${projectId}/spend`),
+  },
+  proposedChanges: {
+    list: (projectId: string, status?: string) =>
+      get<ProposedChange[]>(`/projects/${projectId}/proposed-changes${status ? `?status=${status}` : ""}`),
+    approve: (projectId: string, changeId: string) =>
+      post<{ ok: boolean }>(`/projects/${projectId}/proposed-changes/${changeId}/approve`),
+    reject: (projectId: string, changeId: string) =>
+      post<{ ok: boolean }>(`/projects/${projectId}/proposed-changes/${changeId}/reject`),
   },
   cycle: {
     start: (projectId: string) =>

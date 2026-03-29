@@ -389,9 +389,40 @@ function FeedMessageRow({
         )}
         <span className="text-xs text-gray-700 ml-auto">{relativeTime(msg.created_at)}</span>
       </div>
+      {/* Thinking block — only rendered when non-empty */}
+      {msg.thinking && msg.thinking.trim().length > 0 && (
+        <ThinkingBlock thinking={msg.thinking} />
+      )}
+
       <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
         {msg.content}
       </p>
+    </div>
+  );
+}
+
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = thinking.slice(0, 120);
+
+  return (
+    <div className="mb-2 rounded border border-gray-700/60 bg-gray-800/40 text-xs">
+      <button
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-gray-700/30 transition-colors"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="text-purple-400 font-medium">Claude's Reasoning</span>
+        <span className="text-gray-600 ml-auto">{expanded ? "▾" : "▸"}</span>
+      </button>
+      {expanded ? (
+        <div className="px-2.5 pb-2.5 text-gray-400 whitespace-pre-wrap leading-relaxed border-t border-gray-700/60 pt-2">
+          {thinking}
+        </div>
+      ) : (
+        <div className="px-2.5 pb-2 text-gray-600 italic truncate">
+          {preview}{thinking.length > 120 ? "…" : ""}
+        </div>
+      )}
     </div>
   );
 }

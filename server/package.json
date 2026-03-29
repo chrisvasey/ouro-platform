@@ -8,7 +8,6 @@
     "db:reset": "bun run src/db.ts --reset"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
     "@elysiajs/cors": "^1.4.0",
     "@playwright/test": "^1.58.2",
     "chalk": "^5.6.2",

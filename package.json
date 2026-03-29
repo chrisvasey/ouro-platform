@@ -11,5 +11,8 @@
     "seed": "bun run server/src/seed.ts",
     "ouro": "bun server/src/cli.ts",
     "ouro:watch": "bun server/src/cli.ts watch ouro-platform"
+  },
+  "dependencies": {
+    "playwright": "^1.58.2"
   }
 }

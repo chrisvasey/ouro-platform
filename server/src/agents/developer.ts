@@ -26,8 +26,8 @@ import { loadPrompt } from "../prompts.js";
 import { getArtifactByPhase } from "../db.js";
 import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
-/** Per-step timeout: 150 seconds. Each micro-call has its own independent budget. */
-const STEP_TIMEOUT_MS = 150_000;
+/** Per-step timeout: 240 seconds. Each micro-call has its own independent budget. */
+const STEP_TIMEOUT_MS = 240_000;
 
 interface StepResult { content: string; inputTokens: number; outputTokens: number; costUsd: number; toolUses: Array<{ id: string; name: string; input: unknown }> }
 

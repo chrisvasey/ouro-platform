@@ -284,7 +284,8 @@ export async function runCycle(projectId: string): Promise<void> {
         // Default to "FAIL" when the artifact is missing (agent errored out).
         const testArtifact = getArtifactByPhase(projectId, "test");
         const content = testArtifact?.content ?? "FAIL";
-        const isFail = /FAIL|❌|overall status: FAIL/i.test(content);
+        // Match "Overall status: FAIL" or error artifacts — avoid false-positive on "0 failed"
+        const isFail = /overall status:\s*FAIL/i.test(content) || /❌ FAIL/.test(content) || content.startsWith("# Phase Error");
 
         if (!isFail) {
           testPassed = true;

@@ -56,7 +56,7 @@ const PHASE_TIMEOUTS: Record<string, number> = {
   research:  12 * 60 * 1000,  // 12 min — 3 web searches × 2-3 min each + synthesis
   build:     25 * 60 * 1000,  // 25 min — multi-step: decompose + arch + N chunks + assemble (150s/step × retries)
   design:     8 * 60 * 1000,  //  8 min — 3 steps × 2 min each
-  spec:       4 * 60 * 1000,  //  4 min
+  spec:       8 * 60 * 1000,  //  8 min — writing structured user stories with acceptance criteria takes time
   test:       5 * 60 * 1000,  //  5 min — Playwright runs
   review:     4 * 60 * 1000,  //  4 min
 };

@@ -36,6 +36,15 @@ CLAUDE.md is the source of truth for the AI agents — they read it at the start
 (Reverse chronological: cycle number, date, what was accomplished)
 ```
 
+## CRITICAL: Output Format
+Your ENTIRE response must be the raw CLAUDE.md content — nothing else.
+- Do NOT start with "Now I have what I need" or any other preamble
+- Do NOT end with "Here's what changed" or any summary after the file content
+- Do NOT wrap in code fences
+- Output MUST start with `# Ouro — CLAUDE.md` on the very first line
+- Output MUST end with the last line of the Cycle Log
+- Any text outside the CLAUDE.md structure will corrupt the artifact
+
 ## Style Rules
 - No fluff, no hedging language ("we aim to", "we try to")
 - Active voice: "Agents read CLAUDE.md at task start" not "CLAUDE.md is intended to be read by agents"

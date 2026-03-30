@@ -338,6 +338,7 @@ async function runPlaywrightTests(
       headless: true,
       timeout: 30_000,
       executablePath: process.env.CHROMIUM_EXECUTABLE ?? "/usr/bin/chromium-browser",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
   } catch (err) {
     console.warn("[tester] Chromium launch failed:", (err as Error).message);

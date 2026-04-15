@@ -148,14 +148,18 @@ db.run(`
     project_id   TEXT NOT NULL,
     cycle_id     TEXT,
     agent_role   TEXT,
-    type         TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
     payload      TEXT DEFAULT '{}',
     cost_usd     REAL DEFAULT 0,
+    token_count  INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     created_at   INTEGER NOT NULL
   )
 `);
+// Add input_tokens / output_tokens if missing (schema migration)
+try { db.run("ALTER TABLE events ADD COLUMN input_tokens INTEGER DEFAULT 0"); } catch { /* already exists */ }
+try { db.run("ALTER TABLE events ADD COLUMN output_tokens INTEGER DEFAULT 0"); } catch { /* already exists */ }
 
 // Migrate existing feed_messages to add thinking column
 try {
@@ -659,7 +663,7 @@ export function getSpendToday(projectId: string): number {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const row = db.query<{ total: number }, [string, number]>(
-    "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM events WHERE project_id = ? AND created_at >= ?"
+    "SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM events WHERE project_id = ? AND created_at >= ?"
   ).get(projectId, startOfDay.getTime());
   return row?.total ?? 0;
 }
@@ -685,8 +689,8 @@ export interface DbEvent {
 
 export function insertEvent(event: DbEvent): void {
   db.run(
-    `INSERT INTO events (id, project_id, cycle_id, agent_role, type, payload, cost_usd, input_tokens, output_tokens, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (id, project_id, cycle_id, agent_role, event_type, payload, cost_usd, token_count, input_tokens, output_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newId(),
       event.projectId,
@@ -695,6 +699,7 @@ export function insertEvent(event: DbEvent): void {
       event.type,
       JSON.stringify(event.payload ?? {}),
       event.costUsd ?? 0,
+      (event.inputTokens ?? 0) + (event.outputTokens ?? 0),
       event.inputTokens ?? 0,
       event.outputTokens ?? 0,
       Date.now(),

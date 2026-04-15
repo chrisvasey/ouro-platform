@@ -1,33 +1,171 @@
 /**
  * developer.ts — Developer agent
  *
- * For MVP: reads design.md and produces a detailed implementation plan (build.md).
- * Does NOT run actual code — produces a markdown plan that a future cycle can
- * use as input to real Claude Code execution.
+ * Produces a detailed implementation plan (build.md), then executes it
+ * by spawning Claude Code CLI in the project workspace directory.
  *
- * Uses a 4-step sequential micro-call pipeline so each Claude call stays under
- * the per-step timeout budget rather than sending one huge prompt and waiting
- * 5+ minutes for a response.
- *
- * Pipeline:
+ * Uses a 5-step sequential pipeline:
  *   1. Task decomposition  (~500 token input → numbered task list)
  *   2. Architecture decisions  (task list → data shapes, API contract, file tree)
- *   3. Implementation plan per task chunk  (groups of 3 tasks → impl notes)
+ *   3. Implementation plan per task chunk  (groups of 6 tasks → impl notes)
  *   4. Assemble final build.md  (all outputs → complete artifact)
+ *   5. Execute via Claude Code CLI  (spawn `claude --print` in project workspace)
  *
- * TODO: Real Claude Code integration
- * Replace step 4 (or add a step 5) with a Bun.spawn() that runs Claude Code
- * CLI in a project-specific working directory, captures file diffs, and commits
- * them to the project git repo. Return the commit SHA as part of the result.
+ * Step 5 spawns Claude Code CLI with --print --permission-mode bypassPermissions
+ * in the project workspace directory, passing build.md as the task prompt.
+ * After execution, it does a `git add -A && git commit` to capture changes.
  */
 
+import { join } from "node:path";
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
-import { getArtifactByPhase } from "../db.js";
+import { getArtifactByPhase, getProject } from "../db.js";
 import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
 
 /** Per-step timeout: 240 seconds. Each micro-call has its own independent budget. */
 const STEP_TIMEOUT_MS = 240_000;
+
+/** Claude Code execution timeout: 10 minutes */
+const EXECUTE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Resolve the filesystem workspace directory for a project.
+ * For the self-referential ouro-platform project, this is ~/ouro-platform.
+ * For other projects, defaults to ~/workspaces/<slug>.
+ */
+function resolveWorkspaceDir(slug: string | null): string {
+  const home = process.env.HOME ?? "/home/lucial";
+  if (!slug) return join(home, "workspaces", "unknown");
+  if (slug === "ouro-platform") return join(home, "ouro-platform");
+  return join(home, "workspaces", slug);
+}
+
+/**
+ * Run Claude Code CLI in a workspace directory with a given prompt.
+ * Returns { output, filesChanged, commitSha, success }.
+ */
+async function executeWithClaudeCode(
+  workspaceDir: string,
+  prompt: string,
+  onProgress?: (msg: string) => void
+): Promise<{ output: string; filesChanged: number; commitSha: string | null; success: boolean }> {
+  const token =
+    process.env.CLAUDE_CODE_OAUTH_TOKEN ??
+    process.env.CLAUDE_OAUTH_TOKEN ??
+    process.env.ANTHROPIC_API_KEY;
+
+  if (!token) {
+    console.warn("[developer] No auth token — skipping code execution");
+    return { output: "(No auth token — code execution skipped)", filesChanged: 0, commitSha: null, success: false };
+  }
+
+  onProgress?.("[Developer → All] Starting Claude Code execution...");
+  console.log(`[developer] Step 5: Running Claude Code in ${workspaceDir}`);
+
+  const proc = Bun.spawn(
+    [
+      "claude",
+      "--print",
+      "--permission-mode", "bypassPermissions",
+      "--output-format", "text",
+      prompt,
+    ],
+    {
+      cwd: workspaceDir,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: token,
+        CLAUDE_CODE_OAUTH_TOKEN: token,
+      },
+    }
+  );
+
+  let timedOut = false;
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, EXECUTE_TIMEOUT_MS);
+
+  const [stdout, , exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  clearTimeout(timeoutHandle);
+
+  if (timedOut) {
+    console.warn("[developer] Claude Code execution timed out after 10 minutes");
+    return { output: "(Claude Code execution timed out after 10 minutes)", filesChanged: 0, commitSha: null, success: false };
+  }
+
+  if (exitCode !== 0) {
+    console.warn(`[developer] Claude Code exited ${exitCode}`);
+    // Still try to commit whatever was written
+  }
+
+  // Count staged changes and commit
+  let filesChanged = 0;
+  let commitSha: string | null = null;
+
+  try {
+    // Check if this is a git repo
+    const gitCheck = Bun.spawn(["git", "rev-parse", "--git-dir"], {
+      cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
+    });
+    await gitCheck.exited;
+
+    if (gitCheck.exitCode === 0) {
+      // Count changed files
+      const statusProc = Bun.spawn(["git", "status", "--porcelain"], {
+        cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
+      });
+      const statusOut = await new Response(statusProc.stdout).text();
+      await statusProc.exited;
+      const changedLines = statusOut.trim().split("\n").filter(l => l.trim());
+      filesChanged = changedLines.length;
+
+      if (filesChanged > 0) {
+        // Stage and commit
+        const addProc = Bun.spawn(["git", "add", "-A"], {
+          cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
+        });
+        await addProc.exited;
+
+        const commitMsg = `feat(ouro): cycle auto-implementation — ${filesChanged} file(s) changed`;
+        const commitProc = Bun.spawn(
+          ["git", "commit", "-m", commitMsg, "--author", "Ouro Agent <ouro@ouro.platform>"],
+          { cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
+            env: { ...process.env, GIT_AUTHOR_NAME: "Ouro Agent", GIT_COMMITTER_NAME: "Ouro Agent",
+                   GIT_AUTHOR_EMAIL: "ouro@ouro.platform", GIT_COMMITTER_EMAIL: "ouro@ouro.platform" } }
+        );
+        const commitOut = await new Response(commitProc.stdout).text();
+        await commitProc.exited;
+
+        if (commitProc.exitCode === 0) {
+          const shaMatch = commitOut.match(/\[[\w/]+ ([a-f0-9]+)\]/);
+          commitSha = shaMatch?.[1] ?? null;
+          onProgress?.(`[Developer → All] Committed ${filesChanged} file(s) changed — ${commitSha ?? "no SHA"}`);
+          console.log(`[developer] Committed: ${filesChanged} files, SHA ${commitSha}`);
+        }
+      } else {
+        console.log("[developer] No file changes after execution");
+        onProgress?.("[Developer → All] Execution complete — no file changes detected");
+      }
+    }
+  } catch (gitErr) {
+    console.warn("[developer] Git commit failed:", (gitErr as Error).message);
+  }
+
+  return {
+    output: stdout.slice(0, 4000), // cap at 4KB for artifact
+    filesChanged,
+    commitSha,
+    success: exitCode === 0,
+  };
+}
 
 interface StepResult { content: string; inputTokens: number; outputTokens: number; costUsd: number; toolUses: Array<{ id: string; name: string; input: unknown }> }
 
@@ -99,6 +237,9 @@ export async function runDeveloper(
 
   try {
     const systemPrompt = loadPrompt("developer");
+
+    const project = getProject(projectId);
+    const workspaceDir = resolveWorkspaceDir(project?.slug ?? null);
 
     const designArtifact = getArtifactByPhase(projectId, "design");
     const specArtifact = getArtifactByPhase(projectId, "spec");
@@ -221,15 +362,49 @@ export async function runDeveloper(
     onFeed?.("[Developer → All] build.md assembled — implementation plan complete");
     console.log("[developer] Step 4 complete — build.md ready");
 
-    const content =
+    const buildPlan =
       step4.content ||
       "# Build Plan\n\n(Developer agent timed out on all steps — see server logs for details.)";
 
-    const summary = extractSummary(content);
+    // ─── Step 5: Execute via Claude Code CLI ───────────────────────────────────
+    console.log("[developer] Step 5: Executing via Claude Code CLI...");
 
-    // Stub: log where real CC integration would go
-    console.log("[developer] TODO: Real Claude Code subprocess would run here");
-    console.log("[developer] Would commit implementation to project git repo and return SHA");
+    const executePrompt = [
+      "You are implementing a software feature. Read the build plan below and implement it.",
+      "Make the minimum changes required to satisfy the acceptance criteria.",
+      "Do not ask questions — just implement. Commit nothing (the caller will commit).",
+      "",
+      "## Build Plan:",
+      buildPlan.slice(0, 6000),
+    ].join("\n");
+
+    let executionResult: { output: string; filesChanged: number; commitSha: string | null; success: boolean };
+    try {
+      executionResult = await executeWithClaudeCode(workspaceDir, executePrompt, onFeed);
+    } catch (execErr) {
+      console.warn("[developer] Step 5 execution error:", (execErr as Error).message);
+      executionResult = {
+        output: `Execution error: ${(execErr as Error).message}`,
+        filesChanged: 0,
+        commitSha: null,
+        success: false,
+      };
+    }
+
+    // Append execution summary to build artifact
+    const executionSummary = executionResult.success || executionResult.filesChanged > 0
+      ? `\n\n---\n\n## Execution Result\n\n` +
+        `- **Files changed:** ${executionResult.filesChanged}\n` +
+        `- **Commit SHA:** ${executionResult.commitSha ?? "(none)"}\n` +
+        `- **Status:** ${executionResult.success ? "✅ Success" : "⚠️ Partial"}\n\n` +
+        `### Claude Code Output\n\n\`\`\`\n${executionResult.output}\n\`\`\``
+      : `\n\n---\n\n## Execution Result\n\n⚠️ No file changes detected. Claude Code ran but made no modifications.\n\n` +
+        `\`\`\`\n${executionResult.output}\n\`\`\``;
+
+    const content = buildPlan + executionSummary;
+    const summary = executionResult.filesChanged > 0
+      ? `${executionResult.filesChanged} files changed — commit ${executionResult.commitSha ?? "(no SHA)"}`
+      : extractSummary(buildPlan);
 
     emitAgentCompleted(meta, { inputTokens: totalInput, outputTokens: totalOutput, costUsd: totalCost });
     return { content, summary };

@@ -141,6 +141,22 @@ db.run(`
   )
 `);
 
+// Events table for token/spend tracking
+db.run(`
+  CREATE TABLE IF NOT EXISTS events (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    cycle_id     TEXT,
+    agent_role   TEXT,
+    type         TEXT NOT NULL,
+    payload      TEXT DEFAULT '{}',
+    cost_usd     REAL DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    created_at   INTEGER NOT NULL
+  )
+`);
+
 // Migrate existing feed_messages to add thinking column
 try {
   db.run("ALTER TABLE feed_messages ADD COLUMN thinking TEXT");
@@ -639,9 +655,13 @@ export function getArtifactVersions(projectId: string, phase: string): Artifact[
 
 // ─── Spend / Budget ──────────────────────────────────────────────────────────
 
-export function getSpendToday(_projectId: string): number {
-  // No events table yet — return 0
-  return 0;
+export function getSpendToday(projectId: string): number {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const row = db.query<{ total: number }, [string, number]>(
+    "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM events WHERE project_id = ? AND created_at >= ?"
+  ).get(projectId, startOfDay.getTime());
+  return row?.total ?? 0;
 }
 
 export function getBudgetLimit(projectId: string): number {
@@ -654,13 +674,32 @@ export function getBudgetLimit(projectId: string): number {
 
 export interface DbEvent {
   projectId: string;
+  cycleId?: string;
+  agentRole?: string;
   type: string;
   payload?: Record<string, unknown>;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export function insertEvent(event: DbEvent): void {
-  // Events table not implemented — no-op for now
-  // TODO: implement events table for token tracking
+  db.run(
+    `INSERT INTO events (id, project_id, cycle_id, agent_role, type, payload, cost_usd, input_tokens, output_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      newId(),
+      event.projectId,
+      event.cycleId ?? null,
+      event.agentRole ?? null,
+      event.type,
+      JSON.stringify(event.payload ?? {}),
+      event.costUsd ?? 0,
+      event.inputTokens ?? 0,
+      event.outputTokens ?? 0,
+      Date.now(),
+    ]
+  );
 }
 
 // ─── CLI entrypoint (bun run src/db.ts --reset) ──────────────────────────────

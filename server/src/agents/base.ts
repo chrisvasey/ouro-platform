@@ -41,7 +41,8 @@ export function emitAgentCompleted(
     type: "agent_completed",
     agentRole: meta.agentRole,
     payload: { inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, costUsd: tokens.costUsd },
-    tokenCount: tokens.inputTokens + tokens.outputTokens,
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
     costUsd: tokens.costUsd,
   });
 }

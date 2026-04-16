@@ -44,8 +44,9 @@ type CriterionType = "visibility" | "navigation" | "form" | "list" | "skip";
 function parseUserStories(text: string): UserStory[] {
   const stories: UserStory[] = [];
 
-  // Split on user story headings: ### US-001: ... or ## US-1: ... or **Story N — or Story N:
-  const storyHeadingRe = /(?=(?:###?\s+US-\d+|\*{1,2}Story\s+\d+|^##?\s+Story\s+\d+)[:\s—*])/im;
+  // Split on user story headings: ### US-001: ... or ## Story N — or **Story N — or Story N:
+  // Note: ###? only matches ## or ###, so we handle all heading depths explicitly.
+  const storyHeadingRe = /(?=(?:#{1,4}\s+US-\d+|#{1,4}\s+Story\s+\d+|\*{1,2}Story\s+\d+|^Story\s+\d+)[:\s\u2014*—])/im;
   const blocks = text.split(storyHeadingRe);
 
   for (const block of blocks) {

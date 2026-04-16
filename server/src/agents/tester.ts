@@ -132,7 +132,16 @@ function classifyCriterion(criterion: string): CriterionType {
     lower.includes("server-side") ||
     lower.includes("websocket protocol") ||
     lower.includes("endpoint internally") ||
-    lower.includes("broadcast") && lower.includes("server")
+    (lower.includes("broadcast") && lower.includes("server")) ||
+    // Runtime/timing behaviour that can't be verified by static Playwright checks
+    lower.includes("sse-driven") ||
+    lower.includes("sse driven") ||
+    lower.includes("without a page refresh") ||
+    lower.includes("without page refresh") ||
+    lower.includes("polling acceptable") ||
+    (lower.includes("updates") && lower.includes("refresh")) ||
+    lower.includes("real-time update") ||
+    lower.includes("real time update")
   ) return "skip";
 
   if (

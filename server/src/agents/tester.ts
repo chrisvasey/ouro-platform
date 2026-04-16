@@ -83,7 +83,8 @@ function parseUserStories(text: string): UserStory[] {
         clean = t.replace(/^-\s*✓\s+/, "");
       } else if (/^AC:\s+/i.test(t)) {
         clean = t.replace(/^AC:\s+/i, "");
-      } else if (/^\d+\.\s+[A-Z]/.test(t)) {
+      } else if (inAC && /^\d+\.\s+[A-Z]/.test(t)) {
+        // Numbered criteria only inside AC sections — avoids picking up task/file lists
         clean = t.replace(/^\d+\.\s+/, "");
       } else if (inAC && /^-\s+\S/.test(t)) {
         // Any bullet inside an AC section is a criterion

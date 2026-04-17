@@ -1,592 +1,353 @@
-# Design Specification — Cycle 10
+# Design Specification — Cycle 15
 
-**Designer:** Ouro Designer Agent | **Date:** 2026-03-29 | **Cycle:** 10
-**Scope:** Three UI stories — reasoning toggle in feed messages, daily spend indicator in top bar, artifact content rendered with section headings. Plus: StartCycleButton budget-halted state, cycle run cost in run history, InboxBadge in TopBar.
+**Designer:** Ouro Designer Agent | **Date:** 2026-04-17 | **Cycle:** 15
+**Scope:** Three high-priority blockers — artifact visibility (Story 1), self-mod diff view in approval modal (Story 2/GH#3), and schema prerequisites. Cycle closes GH#3 and lays the structural groundwork for GH#4/GH#7 verification.
 
 ---
 
 ## User Flows
 
-### Flow 1 — Agents produce real output, feed shows content
+### Flow 1 — Artifacts appear when a phase completes
 
-1. User clicks "Start Cycle" on a project (budget < $10.00 for the day).
-2. `loop.ts` spawns the Research agent; server emits `agent_status` WS event (`status: "thinking"`).
-3. Research agent calls `runClaude()`; response arrives with real text + optional thinking blocks.
-4. Server calls `postFeedMessage(projectId, "researcher", "pm", content, "handoff")` storing the message, including `thinking_content` if present.
-5. Server emits `feed_message` WS event; client appends `FeedMessageRow` to the feed.
-6. If the Claude response included thinking blocks, the row renders a `ReasoningToggle` button beneath the message body. Otherwise no toggle is rendered.
-7. Research phase completes; server saves artifact; emits `phase_change` WS event.
-8. User clicks the "Research" phase chip in `CycleTimeline` → `ArtifactDrawer` opens, content rendered as structured markdown (visible `#` headings, `##` headings, bullet lists).
-9. Cycle completes; "Run Status" section shows `#N · complete · $X.XX`.
+1. User opens a project while a cycle is running (or just started one).
+2. Right-column right panel renders `ArtifactsPanel` (below `InboxPanel` in a stacked split). On mount it fetches `GET /api/projects/:id/artifacts`. Response is an empty array.
+3. `ArtifactsPanel` renders `ArtifactEmptyState`: centered text "No artifacts yet".
+4. A cycle phase (e.g. Research) completes in `loop.ts`. Server calls `saveArtifact()`, then broadcasts a new `artifact_created` WS event with the full `Artifact` object.
+5. Client receives `{ event: "artifact_created", projectId, data: Artifact }` in `App.tsx`. The artifact is appended to `artifacts` state.
+6. `ArtifactsPanel` re-renders without user interaction. The empty state is replaced by an `ArtifactRow` for the new artifact.
+7. The row enters a **"new" state** for 2 s: amber left border + `bg-gray-900` background, then fades back to default. This draws the eye without an intrusive notification.
+8. Subsequent phases complete; more `ArtifactRow` components appear in order.
 
-### Flow 2 — Reasoning toggle interaction
+---
 
-1. Feed contains a message with `thinking_content` set to a non-empty string.
-2. `FeedMessageRow` renders the message body, then immediately below it a `ReasoningToggle` button.
-3. Button text: `▸ Reasoning` (collapsed state). Appearance: `text-xs text-gray-600 hover:text-gray-400`.
-4. User clicks the button → `isOpen` state flips to `true`.
-5. An expandable box appears below the button with the raw thinking text. Box: `bg-gray-900 border border-gray-800 rounded-md p-3 text-xs text-gray-500 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto`.
-6. Button text changes to `▾ Reasoning`.
-7. User clicks again → box collapses, button returns to `▸ Reasoning`.
-8. If `thinking_content` is `null`, `undefined`, or empty string, `ReasoningToggle` is not rendered at all — no empty space.
+### Flow 2 — Proposed self-mod change pauses cycle and shows approval modal
 
-### Flow 3 — Daily spend indicator
+1. During a build phase, the developer agent proposes a change to `/server/src/agents/base.ts`.
+2. `loop.ts` calls `createProposedChange(projectId, proposedBy, filePath, diffContent, cycleId)` passing the full replacement content as `diff_content` **and** the current file content as `original_content`.
+3. Server broadcasts `{ event: "proposed_change", projectId, data: ProposedChange }`. The cycle phase does not advance; loop enters a `suspended` wait.
+4. `App.tsx` receives the event, prepends the `ProposedChange` to `proposedChanges` state.
+5. `ProposedChangeModal` is already conditionally rendered for `proposedChanges[0]` (first pending change). It mounts as a full-page portal (z-50).
+6. Modal displays: "Proposed File Change" heading, `proposed_by` label, "Pending approval" amber badge, `file_path` in a code chip, and a two-tab toggle: **"Diff"** (default) | **"Full content"**.
+7. The Diff tab renders `DiffView` (extracted shared component) comparing `original_content` → `diff_content`. Additions are green, removals are red strikethrough, context lines are gray.
+8. The Full Content tab renders the raw `diff_content` in a scrollable `<pre>` block (current behaviour preserved as fallback).
+9. The feed entry for the blocked phase shows a `▲ Blocked` amber indicator inline.
+10. User reviews the diff and clicks **Approve** → modal shows "Applying…" spinner, calls `POST /api/projects/:id/proposed-changes/:id/approve`, server applies the file write, broadcasts `proposed_change_resolved { id, status: "approved" }`, loop resumes, modal unmounts.
+11. OR user clicks **Reject** → same flow but `status: "rejected"`, change is not applied.
+12. If a second proposed change is queued, the next modal mounts immediately after the first resolves.
 
-1. App loads; `App.tsx` fetches `GET /api/projects/:id/spend/today` for the selected project.
-2. Response: `{ spend: 0.42, limit: 10.00 }`.
-3. `SpendIndicator` inside `TopBar` renders `$0.42 / $10.00 today` in `text-gray-400` (spend < 50%).
-4. A cycle runs and costs money; server emits `spend_updated` WS event with new `{ spend, limit }`.
-5. Client updates spend state; `SpendIndicator` re-renders with new value.
-6. When spend reaches $5.00: colour shifts to `text-amber-400`.
-7. When spend reaches $8.00: colour shifts to `text-orange-400 font-semibold`.
-8. When spend reaches $10.00: colour shifts to `text-red-500 font-bold`. `StartCycleButton` becomes disabled with tooltip `"Daily budget reached"`. Running cycle finishes but no new cycle can start.
-9. Every 30 s, `App.tsx` re-polls spend (fallback if WS missed event).
-10. Next UTC day: spend resets to $0.00; all colour states return to gray.
+---
+
+### Flow 3 — Approval modal shows a before/after diff
+
+*(Continuation of Flow 2 — detail on the diff view mechanics.)*
+
+1. `ProposedChangeModal` receives `change.original_content` (the file's content at proposal time) and `change.diff_content` (the full intended replacement).
+2. If `original_content` is `null` or empty string (new file creation): all lines render as additions ("+"), with a subheading "New file — no prior content".
+3. If `original_content` is present: `computeLineDiff(original_content, diff_content)` runs the existing LCS algorithm (extracted from `ArtifactDrawer`) and produces `DiffLine[]`.
+4. Lines render in the `DiffView` component: added=green, removed=red strikethrough, context=gray-500. Prefix characters (`+` / `-` / ` `) are `select-none`.
+5. Large files (>500 lines) show only the changed hunks ± 5 context lines each. A "Show all" toggle below the diff expands to the full view.
+6. The scroll container is `max-h-[55vh] overflow-y-auto` so the action buttons stay visible without scrolling.
 
 ---
 
 ## Component Tree
 
-Legend: `[NEW]` = new file/component, `[MOD]` = existing file modified, `[+]` = new sub-component added inline.
+Legend: `[NEW]` = new file | `[MOD]` = existing file modified | `[EXTRACT]` = moved from another file
 
 ```
-App.tsx [MOD — fetches spend, threads props]
-└── AppShell (layout wrapper, no file change needed)
-    ├── TopBar.tsx [MOD]
-    │   ├── SpendIndicator [+inline NEW]  — right of phase badge, left of inbox badge
-    │   └── InboxBadge [+inline NEW]     — right of SpendIndicator, before cycle buttons
-    ├── ProjectView (layout, lives in App.tsx currently)
-    │   ├── AgentPanel.tsx [no change]
-    │   ├── FeedPanel.tsx [MOD]
-    │   │   └── FeedMessageRow [MOD — adds ReasoningToggle]
-    │   │       └── ReasoningToggle [+inline NEW]
-    │   └── ArtifactDrawer.tsx [MOD — replace <pre> with MarkdownContent]
-    │       └── MarkdownContent [+inline NEW]
-    └── InboxPanel.tsx [no change — InboxBadge in TopBar is a separate indicator]
+App.tsx [MOD]
+├── TopBar (unchanged)
+├── main content area (3-column flex)
+│   ├── AgentPanel (unchanged)
+│   ├── FeedPanel [MOD — add "blocked" status indicator on FeedMessageRow]
+│   │   └── FeedMessageRow [MOD — add BlockedBadge when message_type="blocked"]
+│   └── right column (flex-col, full height)
+│       ├── InboxPanel (unchanged, top half)
+│       └── ArtifactsPanel [NEW] (bottom half, min-h-0 flex-1)
+│           ├── ArtifactEmptyState [NEW]
+│           └── ArtifactRow [NEW] ×N
+└── ProposedChangeModal [MOD — upgrade diff view] (portal, conditional)
+    ├── DiffView [EXTRACT from ArtifactDrawer.tsx]
+    └── (existing approve/reject buttons, unchanged)
+
+DiffView.tsx [NEW FILE — extracted shared component]
+  (used by both ArtifactDrawer and ProposedChangeModal)
 ```
-
-**File-level changes:**
-
-| File | Change |
-|---|---|
-| `client/src/types.ts` | Add `thinking_content`, `blocks_cycle` fields; add `SpendResponse`, `WsEvent spend_updated` |
-| `client/src/api.ts` | Add `spend.today(projectId)` |
-| `client/src/components/TopBar.tsx` | Add `SpendIndicator`, `InboxBadge` inline; new props |
-| `client/src/components/FeedPanel.tsx` | `FeedMessageRow` gets `thinking_content`; add `ReasoningToggle` |
-| `client/src/components/ArtifactDrawer.tsx` | Replace `<pre>` with `MarkdownContent` |
-| `server/src/db.ts` | Migration: `feed_messages ADD COLUMN thinking_content TEXT` |
-| `server/src/index.ts` | New route `GET /api/projects/:id/spend/today`; broadcast `spend_updated`; include `thinking_content` in feed response |
 
 ---
 
 ## Layout & Responsive Behaviour
 
-### TopBar — updated right section
+### Right column split
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────────┐
-│ 🔄 Ouro  │  [Project ▾]  [+]  │  [Research]  │          │  $0.42/$10.00  [📬 2!]  [Start Cycle] │
-└────────────────────────────────────────────────────────────────────────────────────┘
-           divider            phase badge     flex-1    SpendIndicator InboxBadge  cycle btn
+┌─────────────────────────┐
+│  InboxPanel             │  flex-shrink-0, max-h-[40%] of column
+│  (existing)             │
+├─────────────────────────┤
+│  ArtifactsPanel [NEW]   │  flex-1, min-h-0, overflow-y-auto
+│  ─────────────────────  │
+│  ARTIFACTS (label)      │  text-gray-400 text-xs uppercase, px-3 py-2
+│  ─────────────────────  │  border-b border-gray-800
+│  ArtifactRow            │
+│  ArtifactRow            │
+│  ...                    │
+└─────────────────────────┘
 ```
 
-- All right-side items: `flex items-center gap-3`
-- `SpendIndicator`: `text-sm tabular-nums` — always visible when a project is selected
-- `InboxBadge`: `text-sm` — always visible; shows count dot when unread > 0, amber ring when blocker present
-- `StartCycleButton`: rightmost element, pushed by `flex-1` spacer
+- Right column: `flex flex-col h-full`
+- `InboxPanel`: add `flex-shrink-0 max-h-[40%] overflow-y-auto` (currently likely unbounded)
+- `ArtifactsPanel`: `flex-1 min-h-0 flex flex-col bg-gray-950 border-t border-gray-800`
+- On narrow viewports (<1200 px): ArtifactsPanel collapses to a header-only strip with artifact count badge; clicking expands it over the inbox.
 
-### FeedMessageRow — with ReasoningToggle
+### ProposedChangeModal dimensions
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  [🔬 researcher]  →  pm  [handoff]          [view artifact →]  2m ago  │
-│                                                                │
-│  The competitive landscape shows three key players…           │
-│  ▸ Reasoning                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-When expanded:
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  [🔬 researcher]  →  pm  [handoff]                      2m ago  │
-│                                                                │
-│  The competitive landscape shows three key players…           │
-│  ▾ Reasoning                                                   │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │ Let me think about this carefully. The user is asking     │ │
-│  │ about a self-improving AI system. First, I should…        │ │
-│  └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### ArtifactDrawer — markdown content
-
-The `<pre>` block is replaced with a styled div. Headings stand out visually:
-
-```
-┌─── Research Artifact ────────────────────────────────────────┐
-│ 🔬  Research                                            ✕    │
-│     research.md · version 1                                   │
-├───────────────────────────────────────────────────────────────┤
-│                                                               │
-│  Competitive Analysis                      ← h1: text-lg     │
-│  ─────────────────                         ← divider         │
-│                                                               │
-│  Market Overview                           ← h2: text-base   │
-│                                                               │
-│  Three key players dominate the space…     ← p: text-sm      │
-│                                                               │
-│  Key Findings                              ← h2              │
-│  • Player A focuses on developer tooling   ← li              │
-│  • Player B targets enterprise workflows                      │
-│                                                               │
-└───────────────────────────────────────────────────────────────┘
-```
-
-### CycleHistoryRow — with cost
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ #2  ● complete                         2m ago   $0.42       │
-│  [research ✓] [spec ✓] [design ✓] [build ✓] [test ✓] [review ✓] │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Cost badge: `text-xs text-gray-500 tabular-nums` — appears after duration, before end of row.
+- Container: `max-w-2xl w-full max-h-[90vh] flex flex-col` (unchanged outer shell)
+- Diff/content area: `flex-1 min-h-0 overflow-y-auto` — grows to fill modal, stays scrollable
+- Tab bar: `flex gap-1 px-5 pt-3 pb-0 border-b border-gray-800` above the scrollable area
+- Active tab: `border-b-2 border-blue-500 text-gray-100 text-xs pb-2`
+- Inactive tab: `text-gray-500 text-xs pb-2 hover:text-gray-300`
 
 ---
 
 ## Component Specs
 
-### SpendIndicator *(new inline sub-component of TopBar)*
+### DiffView [EXTRACT — new shared file]
 
-**File:** `client/src/components/TopBar.tsx`
+**File:** `client/src/components/DiffView.tsx`
+Extract `computeLineDiff` and the `DiffView` render function verbatim from `ArtifactDrawer.tsx`. No logic changes.
 
 **Props:**
-```ts
-interface SpendIndicatorProps {
-  spend: number;   // dollars, float, e.g. 0.42
-  limit: number;   // dollars, float, e.g. 10.00
+```typescript
+interface DiffViewProps {
+  oldContent: string;   // baseline (empty string = new file)
+  newContent: string;   // proposed replacement
+  maxLines?: number;    // if set, collapse hunks beyond ±5 context; default: unlimited
 }
 ```
 
-**Appearance:**
-- Container: `text-sm tabular-nums`
-- Label format: `$X.XX / $Y.00 today` where X.XX is `spend.toFixed(2)` and Y.00 is `limit.toFixed(2)`
-- Colour by threshold:
+**Appearance:** identical to current `ArtifactDrawer` implementation:
+- Added line: `bg-green-950/40 text-green-300`, prefix `+` in `text-green-500 select-none`
+- Removed line: `bg-red-950/40 text-red-300 line-through decoration-red-700/40`, prefix `-` in `text-red-500 select-none`
+- Context line: `text-gray-500`, prefix ` ` (space)
+- Wrapper: `<pre className="text-xs font-mono leading-relaxed overflow-x-auto">`
 
-| Condition | Class |
-|---|---|
-| `spend / limit < 0.50` | `text-gray-400` |
-| `0.50 ≤ spend / limit < 0.80` | `text-amber-400` |
-| `0.80 ≤ spend / limit < 1.00` | `text-orange-400 font-semibold` |
-| `spend / limit ≥ 1.00` | `text-red-500 font-bold` |
+**Hunk collapsing** (only when `maxLines` is set and diff > `maxLines * 2`):
+- Compute changed line index ranges; keep 5 context lines either side
+- Between collapsed hunks: `<div className="text-gray-600 text-xs py-1 px-2 bg-gray-900/50 select-none">── N unchanged lines ──</div>`
+- "Show all" toggle button at bottom: `text-xs text-gray-500 hover:text-gray-300 underline mt-2 cursor-pointer`
 
-**States:** stateless display component; re-renders when parent passes new `spend` prop.
-
-**Interactions:** none — read-only.
-
-**Edge cases:**
-- `limit = 0`: render `$X.XX / -- today` (avoid division by zero); use `text-gray-600`.
-- `spend = 0, limit = 10`: renders `$0.00 / $10.00 today` in `text-gray-400`.
+**Update `ArtifactDrawer.tsx`:** Remove the inline `computeLineDiff` and `DiffView` definitions, import from `./DiffView`.
 
 ---
 
-### InboxBadge *(new inline sub-component of TopBar)*
+### ArtifactsPanel [NEW]
 
-**File:** `client/src/components/TopBar.tsx`
+**File:** `client/src/components/ArtifactsPanel.tsx`
+
+**Purpose:** Always-visible list of all artifacts produced in the current project's most recent cycle. Live-updates via WS without page refresh.
 
 **Props:**
-```ts
-interface InboxBadgeProps {
-  unreadCount: number;
-  hasBlocker: boolean;  // true if any unread inbox message has blocks_cycle = 1
+```typescript
+interface ArtifactsPanelProps {
+  projectId: string;
+  artifacts: Artifact[];   // managed in App.tsx state, passed down
 }
 ```
-
-**Appearance:**
-- Container: `relative inline-flex items-center`
-- Icon: `📬` as text emoji, `text-base leading-none`; OR a simple envelope SVG — use emoji for zero dependencies.
-- Count dot: appears when `unreadCount > 0` — `absolute -top-1 -right-1 min-w-[1rem] h-4 flex items-center justify-center text-[10px] font-bold rounded-full px-1`
-  - Normal unread: `bg-blue-600 text-white`
-  - Has blocker: `bg-amber-500 text-white` (overrides blue)
-- No dot when `unreadCount === 0`
 
 **States:**
-
-| State | Appearance |
-|---|---|
-| `unreadCount = 0` | Icon only, no dot |
-| `unreadCount > 0, !hasBlocker` | Blue dot with count |
-| `hasBlocker` | Amber dot with count; icon gets `opacity-100` ring-amber-500/20 outline (1px) |
-
-**Interactions:**
-- `onClick`: scrolls InboxPanel into view OR opens inbox panel if collapsed (implementation detail for developer — emit a prop callback `onInboxClick?: () => void`).
-- `title` attribute: `"${unreadCount} unread message${unreadCount !== 1 ? 's' : ''}"` when `unreadCount > 0`; `"Inbox"` when 0.
-- Cursor: `cursor-pointer`
-
-**Data:** passed as props from parent App.tsx (computed from `inboxMessages` state).
-
----
-
-### TopBar *(modified)*
-
-**File:** `client/src/components/TopBar.tsx`
-
-**New/changed props:**
-```ts
-interface TopBarProps {
-  // existing:
-  projects: Project[];
-  selectedProject: Project | null;
-  onSelectProject: (project: Project) => void;
-  onProjectsChange: (projects: Project[]) => void;
-  cycleRunning: boolean;
-  onStartCycle: () => void;
-  onStopCycle: () => void;
-  // new:
-  dailySpend: number;        // dollars
-  dailyLimit: number;        // dollars — always 10.00 for now
-  budgetHalted: boolean;     // true when dailySpend >= dailyLimit
-  unreadInboxCount: number;
-  hasBlocker: boolean;
-  onInboxClick?: () => void;
-}
-```
-
-**Right-side layout (inside `<header>`):**
-```
-<div className="flex-1" />   {/* spacer */}
-<SpendIndicator spend={dailySpend} limit={dailyLimit} />
-<InboxBadge unreadCount={unreadInboxCount} hasBlocker={hasBlocker} onInboxClick={onInboxClick} />
-<StartCycleButton ... />  {/* or running indicator */}
-```
-
-**StartCycleButton disabled state** (budget halted):
-- When `budgetHalted && !cycleRunning`:
-  - Button rendered with `disabled` attribute
-  - Classes: `bg-gray-700 text-gray-500 cursor-not-allowed` (not `bg-blue-600`)
-  - `title` attribute: `"Daily budget reached ($${dailySpend.toFixed(2)} / $${dailyLimit.toFixed(2)})"`
-  - No `onClick` handler fires (button is `disabled`)
-
-No other changes to TopBar logic.
-
----
-
-### ReasoningToggle *(new inline sub-component of FeedPanel)*
-
-**File:** `client/src/components/FeedPanel.tsx`
-
-**Props:**
-```ts
-interface ReasoningToggleProps {
-  content: string;  // raw thinking block text
-}
-```
-
-**Internal state:** `const [isOpen, setIsOpen] = useState(false)`
+- `loading` — skeleton pulse rows (3 rows, `h-8 rounded bg-gray-800 animate-pulse`)
+- `empty` — renders `ArtifactEmptyState`
+- `populated` — renders `ArtifactRow` per artifact, newest first
 
 **Appearance:**
-- Toggle button: `mt-1.5 flex items-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors cursor-pointer select-none`
-- Button text: `{isOpen ? "▾" : "▸"} Reasoning`
-- No background on button — it blends into the message row
-- Expanded content box: `mt-1 bg-gray-900 border border-gray-800 rounded-md p-3 text-xs text-gray-500 font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto leading-relaxed`
+- Outer: `flex flex-col bg-gray-950 border-t border-gray-800 flex-1 min-h-0`
+- Header bar: `flex items-center justify-between px-3 py-2 flex-shrink-0`
+  - Label: `text-gray-400 text-xs font-medium uppercase tracking-wide`
+  - Count badge (when populated): `text-gray-600 text-xs` e.g. "3"
+- Body: `flex-1 overflow-y-auto`
 
-**Rendering:**
-```tsx
-function ReasoningToggle({ content }: ReasoningToggleProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  return (
-    <div>
-      <button
-        className="mt-1.5 flex items-center gap-1 text-xs text-gray-600 hover:text-gray-400 transition-colors cursor-pointer select-none"
-        onClick={() => setIsOpen((v) => !v)}
-      >
-        <span>{isOpen ? "▾" : "▸"}</span>
-        <span>Reasoning</span>
-      </button>
-      {isOpen && (
-        <div className="mt-1 bg-gray-900 border border-gray-800 rounded-md p-3 text-xs text-gray-500 font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto leading-relaxed">
-          {content}
-        </div>
-      )}
-    </div>
-  );
-}
-```
+**Data flow:**
+1. On mount: `App.tsx` already fetches `GET /api/projects/:id/artifacts` and stores in `artifacts` state. No local fetch needed.
+2. On `artifact_created` WS event: `App.tsx` prepends new artifact to `artifacts` array, triggering re-render.
 
-**Conditions for rendering:**
-- Rendered in `FeedMessageRow` only when `msg.thinking_content` is a non-empty string.
-- `if (!msg.thinking_content) return null` — no empty space left behind.
+**Interactions:** read-only panel. Clicking an `ArtifactRow` opens `ArtifactDrawer` for that phase (same as clicking phase chip in FeedPanel). Pass `onPhaseClick(phase: string)` prop from App.
 
 ---
 
-### FeedMessageRow *(modified)*
+### ArtifactEmptyState [NEW — inline in ArtifactsPanel]
 
-**File:** `client/src/components/FeedPanel.tsx`
+**Purpose:** Placeholder when `artifacts.length === 0`.
 
-No structural change to the row. The only addition is rendering `ReasoningToggle` after `<p className="text-sm text-gray-300 ...">`:
-
-```tsx
-<p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap break-words">
-  {msg.content}
-</p>
-{msg.thinking_content && (
-  <ReasoningToggle content={msg.thinking_content} />
-)}
+**Appearance:**
+```
+flex items-center justify-center h-16
+"No artifacts yet" — text-gray-600 text-xs
 ```
 
-`FeedMessage` type must have `thinking_content?: string | null` (see Data Changes section).
+No icon, no action button.
 
 ---
 
-### MarkdownContent *(new inline sub-component of ArtifactDrawer)*
+### ArtifactRow [NEW — inline in ArtifactsPanel]
 
-**File:** `client/src/components/ArtifactDrawer.tsx`
-
-**Purpose:** Replace the raw `<pre>` block with structured rendering for markdown-flavoured text. No external markdown library — implement a minimal line-by-line renderer sufficient for artifact content.
+**Purpose:** Single artifact line — name, role badge, relative timestamp.
 
 **Props:**
-```ts
-interface MarkdownContentProps {
-  content: string;
+```typescript
+interface ArtifactRowProps {
+  artifact: Artifact;
+  isNew: boolean;        // true for 2s after insertion
+  onClick: () => void;
 }
 ```
 
-**Rendering rules** (line-by-line, in order of precedence):
-
-| Pattern | Element | Classes |
-|---|---|---|
-| `^# ` | `<h1>` | `text-lg font-semibold text-gray-100 mt-4 mb-1 pb-0.5 border-b border-gray-800` |
-| `^## ` | `<h2>` | `text-base font-semibold text-gray-200 mt-3 mb-1` |
-| `^### ` | `<h3>` | `text-sm font-semibold text-gray-300 mt-2 mb-0.5` |
-| `^- ` or `^\* ` | `<li>` in `<ul>` | ul: `ml-4 my-1 space-y-0.5`; li: `text-sm text-gray-300 list-disc` |
-| `^[0-9]+\. ` | `<li>` in `<ol>` | ol: `ml-4 my-1 space-y-0.5`; li: `text-sm text-gray-300 list-decimal` |
-| `` ^``` `` | start/end code block | `bg-gray-950 border border-gray-800 rounded p-2 font-mono text-xs text-gray-400 my-2 overflow-x-auto` |
-| `^---` or `^===` | `<hr>` | `border-gray-800 my-3` |
-| empty line | paragraph break | renders as `<div className="h-2" />` |
-| any other line | `<p>` | `text-sm text-gray-300 leading-relaxed` |
-
-**Inline formatting within text nodes** (applied to `<p>` and `<li>` content only, not headings):
-- `**text**` → `<strong className="text-gray-100 font-semibold">text</strong>`
-- `` `code` `` → `<code className="bg-gray-800 text-gray-300 text-xs px-1 py-0.5 rounded font-mono">code</code>`
-
-**Implementation approach:**
-1. Split `content` by `\n` into lines.
-2. Process line-by-line with state (`inCodeBlock: boolean`, `inList: 'ul' | 'ol' | null`).
-3. When list state changes (e.g. entering a `-` line from a non-list line), open a `<ul>` wrapper. When a non-list line follows, close the wrapper.
-4. Code block: toggle on `\`\`\`` line; lines between delimiters rendered as plain text inside the styled `<pre>`.
-5. Return array of React elements.
-
-**Container:**
-```tsx
-<div className="text-sm leading-relaxed">
-  {renderMarkdown(artifact.content)}
-</div>
+**Appearance (default):**
+```
+px-3 py-2 flex items-center gap-3 cursor-pointer
+hover:bg-gray-900/60 transition-colors
+border-l-2 border-transparent
 ```
 
-**Edge cases:**
-- Artifact content is a single long line with no newlines: renders as one `<p>`.
-- Content starts with a code block immediately: `inCodeBlock` triggers correctly.
-- Headings inside code blocks: treated as literal text.
+**State: `new`** (2 s after insertion):
+```
+border-l-2 border-amber-500 bg-gray-900
+```
+Faded via `transition-colors duration-[2000ms]` — on mount set `isNew=true`, after 2000 ms set `isNew=false`.
+
+**Layout inside row:**
+```
+[role badge] [artifact name — flex-1] [timestamp]
+```
+- Role badge: `text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-gray-800 text-gray-400` — e.g. "researcher"
+- Name: `text-gray-100 text-sm truncate flex-1`
+- Timestamp: `text-gray-600 text-xs flex-shrink-0` — `relativeTime(artifact.created_at)` from `utils.ts`
+
+**Interactions:**
+- Click → calls `onClick()` → App opens `ArtifactDrawer` for `artifact.phase`
+- No keyboard shortcut (MVP)
 
 ---
 
-### CycleHistoryRow *(modified — cost display)*
+### ProposedChangeModal [MOD]
+
+**File:** `client/src/components/ProposedChangeModal.tsx`
+
+**Changes from current:**
+1. Import `DiffView` from `./DiffView` (new shared file).
+2. Add `activeTab: "diff" | "full"` local state, default `"diff"`.
+3. Render tab bar between file-path block and content area.
+4. Diff tab: `<DiffView oldContent={change.original_content ?? ""} newContent={change.diff_content} maxLines={200} />`
+5. Full tab: existing `<pre>` block (unchanged).
+6. If `change.original_content` is `null`/empty and active tab is "diff": render an info note above `DiffView`:
+   ```
+   <p className="text-xs text-amber-500/80 mb-2">New file — all content is new</p>
+   ```
+
+**Props:** unchanged (`ProposedChangeModalProps`).
+**No changes** to Approve/Reject logic, loading state, or backdrop.
+
+**DB prerequisite:** `proposed_changes` table needs an `original_content TEXT` column (nullable). Server's `createProposedChange()` must read the current file content before writing the record. See Edge Cases §2 for failure handling.
+
+---
+
+### FeedMessageRow [MOD — add BlockedBadge]
 
 **File:** `client/src/components/FeedPanel.tsx`
 
-`CycleRun` type gets optional `total_cost_usd?: number`. When present and > 0, render after the duration string:
+**Change:** When a feed message has `message_type === "blocked"` (new type to be emitted by loop.ts when a blocker is created), render an amber inline badge after the sender name:
 
-```tsx
-{durationStr && (
-  <span className="text-xs text-gray-700">{durationStr}</span>
-)}
-{typeof cycle.total_cost_usd === 'number' && cycle.total_cost_usd > 0 && (
-  <span className="text-xs text-gray-600 tabular-nums">
-    ${cycle.total_cost_usd.toFixed(2)}
-  </span>
-)}
+```
+<span className="text-[10px] text-amber-400 bg-amber-900/30 px-1.5 py-0.5 rounded font-medium ml-1">
+  ▲ Blocked
+</span>
 ```
 
-No other changes to `CycleHistoryRow`.
+The badge is purely cosmetic — it signals to the user that the cycle is paused at this step.
 
 ---
 
-## Data Shape Changes
+## Schema Prerequisites
 
-### `client/src/types.ts`
+These DB changes must land in a single migration commit before any component work.
 
-```ts
-// FeedMessage — add thinking_content
-export interface FeedMessage {
-  id: string;
-  project_id: string;
-  sender_role: string;
-  recipient: string;
-  content: string;
-  message_type: "handoff" | "question" | "decision" | "note" | "escalate";
-  thinking_content: string | null;  // ADD THIS
-  created_at: number;
-}
-
-// InboxMessage — add blocks_cycle
-export interface InboxMessage {
-  // ... existing fields ...
-  blocks_cycle: number;  // ADD THIS — 0 = non-blocking, 1 = blocks cycle
-}
-
-// CycleRun — add total_cost_usd
-export interface CycleRun {
-  // ... existing fields ...
-  total_cost_usd?: number;  // ADD THIS — null when no events recorded
-}
-
-// New type for spend response
-export interface SpendResponse {
-  spend: number;   // dollars, float
-  limit: number;   // dollars, float — 10.00
-}
-
-// WsEvent — add spend_updated
-export type WsEvent =
-  | { event: "connected"; data: { clientCount: number } }
-  | { event: "subscribed"; data: { projectId: string } }
-  | { event: "feed_message"; projectId: string; data: FeedMessage }
-  | { event: "inbox_message"; projectId: string; data: InboxMessage }
-  | { event: "agent_status"; projectId: string; data: { role: string; status: string; current_task?: string | null } }
-  | { event: "phase_change"; projectId: string; data: { phase: string } }
-  | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } }
-  | { event: "spend_updated"; projectId: string; data: SpendResponse };  // ADD THIS
-```
-
-### `client/src/api.ts`
-
-Add a new `spend` namespace:
-
-```ts
-spend: {
-  today: (projectId: string) =>
-    get<SpendResponse>(`/projects/${projectId}/spend/today`),
-},
-```
-
----
-
-## API Contract
-
-### `GET /api/projects/:id/spend/today`
-
-**Response:**
-```json
-{ "spend": 0.42, "limit": 10.00 }
-```
-
-**Logic (server/src/index.ts):**
-```ts
-const todayStart = new Date();
-todayStart.setUTCHours(0, 0, 0, 0);
-const spend = db.query(
-  "SELECT COALESCE(SUM(cost_usd), 0) as total FROM events WHERE project_id = ? AND created_at >= ?"
-).get(projectId, todayStart.getTime()) as { total: number };
-return { spend: spend.total, limit: 10.0 };
-```
-
-**`spend_updated` WS broadcast:**
-- Triggered whenever `insertEvent()` is called with `cost_usd > 0`.
-- Server computes new daily spend total and broadcasts `{ event: "spend_updated", projectId, data: { spend, limit: 10.0 } }` to all subscribers for that project.
-- Implementation: call a helper `broadcastSpendUpdate(projectId)` at the end of `insertEvent()`.
-
-### `GET /api/projects/:id/cycles` — extended
-
-Existing route. Extend to compute `total_cost_usd` per cycle:
+### 1. `proposed_changes` — add `original_content`
 
 ```sql
-SELECT c.*, COALESCE(SUM(e.cost_usd), 0) as total_cost_usd
-FROM cycles c
-LEFT JOIN events e ON e.cycle_id = c.id
-WHERE c.project_id = ?
-GROUP BY c.id
-ORDER BY c.started_at DESC
+ALTER TABLE proposed_changes ADD COLUMN original_content TEXT;
 ```
 
-Add `total_cost_usd` to the returned JSON for each cycle row.
+`NULL` means new file or content was unreadable at proposal time. The modal handles both cases.
 
----
+### 2. WS event type — `artifact_created`
 
-## DB Schema Changes
+No schema change. Server adds a `broadcastToProject` call inside `saveArtifact()` in `db.ts`:
 
-### `feed_messages` — add `thinking_content`
-
-```sql
-ALTER TABLE feed_messages ADD COLUMN thinking_content TEXT;
+```typescript
+// After INSERT in saveArtifact():
+broadcastToProject(projectId, "artifact_created", artifact);
 ```
 
-Wrap in try/catch (idempotent migration), add to `db.ts` alongside existing migrations.
+This requires `broadcastToProject` to be importable from `db.ts` or passed in as a callback. Preferred pattern: pass the broadcast function as an optional parameter to `saveArtifact()` to avoid circular imports between `db.ts` and `index.ts`.
 
-`thinking_content` is `NULL` for all historical rows (no backfill needed — pre-SDK messages have no thinking blocks).
+### 3. `WsEvent` union in `client/src/types.ts`
 
-When `postFeedMessage` is called, pass `thinking_content?: string | null` as an optional parameter. If `null` / absent, store `NULL`.
+Add:
+```typescript
+| { event: "artifact_created"; projectId: string; data: Artifact }
+| { event: "proposed_change"; projectId: string; data: ProposedChange }
+```
 
----
-
-## App.tsx Changes
-
-`App.tsx` is not specced here (backend concern) but the developer needs these additions:
-
-1. **State:** `const [dailySpend, setDailySpend] = useState(0)` and `const dailyLimit = 10.0`.
-2. **Initial fetch:** after project selection, call `api.spend.today(projectId)` and set state.
-3. **Poll:** `setInterval(() => api.spend.today(projectId).then(r => setDailySpend(r.spend)), 30_000)` — clear on project change / unmount.
-4. **WS handler:** on `spend_updated` event matching current `projectId`, call `setDailySpend(data.spend)`.
-5. **Derived:** `budgetHalted = dailySpend >= dailyLimit`.
-6. **Inbox derived:** `hasBlocker = inboxMessages.some(m => !m.is_read && m.blocks_cycle === 1)`.
-7. **Pass to TopBar:** `dailySpend`, `dailyLimit`, `budgetHalted`, `unreadInboxCount`, `hasBlocker`.
+Note: `proposed_change` (new change proposed) is distinct from `proposed_change_resolved`. The existing `proposed_change_resolved` event is unchanged.
 
 ---
 
 ## Edge Cases & Empty States
 
-1. **No API key / mock mode:** `runClaude()` returns `real: false`, `costUsd: 0`. Feed messages have `thinking_content = null`. `SpendIndicator` shows `$0.00 / $10.00 today` in gray. Cycle history shows `$0.00` (or omits cost label when `total_cost_usd === 0`).
+1. **Phase completes but `saveArtifact` throws** — artifact row never appears. ArtifactsPanel stays in populated state with previous artifacts. No error shown in panel (the loop's error handling should post a feed message). No special handling needed in ArtifactsPanel.
 
-2. **thinking_content is very long:** `ReasoningToggle` expanded box has `max-h-48 overflow-y-auto` — user can scroll. No truncation of the stored content.
+2. **`original_content` read fails** (file doesn't exist yet, or read permission error) — `createProposedChange` stores `original_content = null`. Modal renders "New file — all content is new" note and shows all lines as additions. This is correct for new-file proposals and a tolerable approximation for unreadable-file proposals.
 
-3. **Budget exactly at limit ($10.00):** `budgetHalted = true`, Start Cycle button disabled. A running cycle that crosses $10.00 mid-run is not stopped mid-phase (the gate only applies at cycle start). Spec Story 7 covers the halt gate; this design only covers the UI disabled state.
+3. **`original_content` is very large** (>10 000 lines) — `DiffView` with `maxLines=200` collapses to hunks. "Show all" toggle is available if the user needs it. LCS on 10 000-line files may be slow (~100 ms) — acceptable as this is a one-time render triggered by user approval, not a hot path.
 
-4. **Artifact content is empty string or whitespace only:** `MarkdownContent` renders nothing (empty div). `ArtifactDrawer` shows the drawer but content area is blank — acceptable since a non-empty artifact should always exist when the drawer is opened via a phase click.
+4. **Multiple proposed changes queued simultaneously** — `App.tsx` already handles this (first pending item in array drives the modal; on `proposed_change_resolved` the next item shows). No design change needed.
 
-5. **Artifact has no section headings (flat prose):** `MarkdownContent` renders all lines as `<p>` elements. Still more readable than `<pre>` because word-wrap applies.
+5. **WS reconnect mid-cycle** — `useWebSocket` already sends `{ type: "subscribe", projectId }` on reconnect. Server should respond with a `snapshot` event containing current `proposedChanges` and `artifacts`. If snapshot is not yet implemented, ArtifactsPanel falls back to its initial HTTP fetch (already in mount path via App.tsx). Proposed-change queue is re-fetched by App.tsx's `api.proposedChanges.list()` on reconnect (confirm this is in the reconnect handler — if not, add it).
 
-6. **InboxBadge when no project selected:** `unreadInboxCount = 0`, `hasBlocker = false` — badge not shown (no dot). Component renders the icon with no dot.
+6. **ArtifactsPanel on project switch** — `App.tsx` already resets state on `selectedProject` change. `artifacts` array resets to `[]`, triggering `ArtifactEmptyState`.
 
-7. **SpendIndicator when no project selected:** render `null` — `SpendIndicator` is not shown until a project is selected and the first spend fetch completes.
+7. **ArtifactRow "new" flash on initial load** — all rows from the initial HTTP fetch must NOT animate in as "new". Only rows inserted via WS event after mount should receive `isNew=true`. Implement by tracking a `Set<string>` of IDs that were present at mount time in `App.tsx` or `ArtifactsPanel`.
 
-8. **WS disconnects mid-cycle:** spend polling (30 s interval) acts as fallback. `SpendIndicator` may lag up to 30 s but will self-correct. No stale-data indicator is needed for MVP.
+8. **Cycle has no artifacts (e.g. cycle errored before any phase completed)** — `ArtifactEmptyState` is shown indefinitely. This is correct.
 
-9. **Multiple tabs open:** each tab maintains its own spend state via independent polling + WS subscription. No conflict since spend is read-only in the UI.
+9. **`ArtifactsPanel` in narrow viewport** — at <1200 px the right column may be hidden. The panel should not break layout; use `hidden lg:flex` on the right column if not already present.
 
-10. **Cycle history with 0 events (mock run):** `total_cost_usd` = 0. Cost is not rendered in `CycleHistoryRow` when `total_cost_usd === 0` (condition: `total_cost_usd > 0` guard in JSX).
-
-11. **MarkdownContent inside a `##` heading line containing `**bold**`:** heading lines are NOT processed for inline formatting — the raw text including `**` is rendered as-is in the heading element. This avoids edge cases in the minimal renderer; headings in practice won't use bold markdown.
-
-12. **Code fence without closing delimiter (truncated artifact):** if `inCodeBlock` is still `true` at end of lines, close the `<pre>` block. Renders whatever content was captured.
+10. **`BlockedBadge` on non-`blocked` message types** — guard with `{message.message_type === "blocked" && <BlockedBadge />}`. No effect on existing message types.
 
 ---
 
 ## Design Decisions
 
-1. **No markdown library dependency.** `MarkdownContent` implements only what agent output actually uses: headings, bullets, numbered lists, horizontal rules, code fences, bold, inline code. This avoids bundling a full parser and keeps the component auditable. If richer rendering is needed, swap the body of `renderMarkdown()` for `marked`/`micromark` without changing the component interface.
+### D1 — Extract `DiffView` rather than duplicate
 
-2. **`thinking_content` in `feed_messages`, not a separate table.** One-to-one relationship (one thinking block per message), always fetched together, simplest query path. If an agent emits multiple thinking blocks, concatenate them with `\n---\n` separator before storing.
+`ArtifactDrawer.tsx` already contains a working, pure-TypeScript `DiffView` with LCS. Rather than introducing `git-diff-view` (GH#3 says ESM compat is unconfirmed), extract the existing implementation into a shared `DiffView.tsx`. This closes GH#3 without adding a dependency.
 
-3. **`SpendIndicator` is per-project, not global.** Consistent with the rest of the UI (all data is scoped to the selected project). A global daily limit across projects can be added later by removing the `project_id` scope from the query.
+### D2 — `ArtifactsPanel` receives `artifacts` from App.tsx, not local state
 
-4. **`InboxBadge` rendered inside `TopBar`** rather than as a floating portal. The existing `InboxPanel` already shows an unread count in its own header. The `InboxBadge` in `TopBar` is an additional global indicator that surfaces blockers even when the user is focused on the feed. Both can coexist without confusion.
+Centralising `artifacts` in `App.tsx` means WS events update the panel without prop drilling or context. This matches the existing pattern for `feedMessages`, `inboxMessages`, and `proposedChanges`.
 
-5. **Spend polling every 30 s as fallback.** WS `spend_updated` is the primary update mechanism (real-time). The poll is a cheap insurance policy against missed events or WS reconnects. 30 s is a reasonable lag for a non-critical indicator.
+### D3 — `original_content` stored at proposal time, not fetched at approval time
 
-6. **`budgetHalted` is a UI-only gate in this design.** The server-side halt gate (blocking inbox message + `blocks_cycle=1`) is specified in the system spec but is not part of this design cycle's UI scope. The `StartCycleButton` disabled state here is purely derived from `dailySpend >= dailyLimit` on the client — no server-side enforcement added in this cycle.
+If we deferred the file read to approval time, the current file content might have changed (e.g. another change was applied). Storing at proposal time gives the user an accurate before/after picture of what the agent actually saw.
 
-7. **No `AgentPanel` changes.** The inputs did not include agent rail updates. `AgentPanel.tsx` is left unchanged.
+### D4 — "Diff" tab is default in ProposedChangeModal
 
-8. **`CycleHistoryRow` cost rendered only when `> 0`.** Zero-cost runs (mock mode) do not show `$0.00` — it would be misleading noise. The absence of a cost label signals "no real API calls were made".
+The diff is the most actionable view for a reviewer. The "Full content" tab is a fallback for users who want to read the entire replacement without the noise of unchanged context lines.
+
+### D5 — No dedicated `phase_meta` event; use `artifact_created` instead
+
+The spec mentions `phase_meta` but the server currently emits `phase_change`. Rather than adding another event with overlapping semantics, `artifact_created` is more specific: it fires exactly when an artifact is available, avoids ambiguity around phases that might complete without producing artifacts (e.g. a blocked phase), and requires no changes to existing `phase_change` handling.
+
+### D6 — `broadcastToProject` passed as callback into `saveArtifact`
+
+Avoid circular import: `db.ts` imports nothing from `index.ts`. Pass the broadcast function as an optional `notify?: (artifact: Artifact) => void` parameter. Call sites in `loop.ts`/`agents/*.ts` that already have access to the broadcast function pass it in.

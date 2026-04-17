@@ -211,7 +211,9 @@ export async function runCycle(projectId: string): Promise<void> {
       const result = await runAgentWithTimeout(phase, projectId, taskDescription, onFeed, cycleRecord.id);
       lastResult = result;
 
-      await saveArtifact(projectId, phase, filename, result.content, cycleRecord.id);
+      await saveArtifact(projectId, phase, filename, result.content, cycleRecord.id, (artifact) => {
+        broadcast(projectId, "artifact_created", artifact);
+      });
 
       const feedMsg = postFeedMessage(
         projectId,

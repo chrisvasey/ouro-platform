@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
+import { readFileSync } from "node:fs";
 
 const DB_PATH = process.env.DATABASE_URL ?? join(import.meta.dir, "../../ouro.db");
 
@@ -129,17 +130,25 @@ db.run(`
 
 db.run(`
   CREATE TABLE IF NOT EXISTS proposed_changes (
-    id           TEXT PRIMARY KEY,
-    cycle_id     TEXT,
-    project_id   TEXT NOT NULL,
-    proposed_by  TEXT NOT NULL,
-    file_path    TEXT NOT NULL,
-    diff_content TEXT NOT NULL,
-    status       TEXT DEFAULT 'PENDING',
-    reviewed_at  INTEGER,
-    created_at   INTEGER NOT NULL
+    id               TEXT PRIMARY KEY,
+    cycle_id         TEXT,
+    project_id       TEXT NOT NULL,
+    proposed_by      TEXT NOT NULL,
+    file_path        TEXT NOT NULL,
+    diff_content     TEXT NOT NULL,
+    original_content TEXT,
+    status           TEXT DEFAULT 'PENDING',
+    reviewed_at      INTEGER,
+    created_at       INTEGER NOT NULL
   )
 `);
+
+// Migrate existing proposed_changes tables that pre-date original_content
+try {
+  db.run("ALTER TABLE proposed_changes ADD COLUMN original_content TEXT");
+} catch {
+  // Column already exists — ignore
+}
 
 // Events table for token/spend tracking
 db.run(`
@@ -404,7 +413,8 @@ export async function saveArtifact(
   phase: string,
   filename: string,
   content: string,
-  cycleId?: string
+  cycleId?: string,
+  notify?: (artifact: Artifact) => void
 ): Promise<Artifact> {
   // Increment version if artifact already exists
   const existing = db
@@ -459,7 +469,9 @@ export async function saveArtifact(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, projectId, phase, filename, content, version, ts, cycle_id, previous_version_id, diff_from_previous]
   );
-  return { id, project_id: projectId, phase, filename, content, version, created_at: ts, cycle_id, previous_version_id, diff_from_previous };
+  const artifact: Artifact = { id, project_id: projectId, phase, filename, content, version, created_at: ts, cycle_id, previous_version_id, diff_from_previous };
+  notify?.(artifact);
+  return artifact;
 }
 
 export function listArtifacts(projectId: string): Artifact[] {
@@ -600,6 +612,7 @@ export interface ProposedChange {
   proposed_by: string;
   file_path: string;
   diff_content: string;
+  original_content: string | null;
   status: "PENDING" | "APPROVED" | "REJECTED";
   reviewed_at: number | null;
   created_at: number;
@@ -614,12 +627,18 @@ export function createProposedChange(
 ): ProposedChange {
   const id = newId();
   const ts = now();
+  let originalContent: string | null = null;
+  try {
+    originalContent = readFileSync(filePath, "utf-8");
+  } catch {
+    // New file or unreadable — leave as null
+  }
   db.run(
-    `INSERT INTO proposed_changes (id, cycle_id, project_id, proposed_by, file_path, diff_content, status, reviewed_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'PENDING', NULL, ?)`,
-    [id, cycleId ?? null, projectId, proposedBy, filePath, diffContent, ts]
+    `INSERT INTO proposed_changes (id, cycle_id, project_id, proposed_by, file_path, diff_content, original_content, status, reviewed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, ?)`,
+    [id, cycleId ?? null, projectId, proposedBy, filePath, diffContent, originalContent, ts]
   );
-  return { id, cycle_id: cycleId ?? null, project_id: projectId, proposed_by: proposedBy, file_path: filePath, diff_content: diffContent, status: "PENDING", reviewed_at: null, created_at: ts };
+  return { id, cycle_id: cycleId ?? null, project_id: projectId, proposed_by: proposedBy, file_path: filePath, diff_content: diffContent, original_content: originalContent, status: "PENDING", reviewed_at: null, created_at: ts };
 }
 
 export function listProposedChanges(projectId: string, status?: string): ProposedChange[] {

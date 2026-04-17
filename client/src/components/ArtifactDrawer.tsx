@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Artifact } from "../types";
 import { api } from "../api";
+import { DiffView } from "./DiffView";
 
 const PHASE_EMOJI: Record<string, string> = {
   research: "🔬",
@@ -26,86 +27,6 @@ interface ArtifactDrawerProps {
   onClose: () => void;
 }
 
-// ─── Simple line diff ─────────────────────────────────────────────────────────
-
-interface DiffLine {
-  type: "added" | "removed" | "context";
-  content: string;
-}
-
-function computeLineDiff(oldText: string, newText: string): DiffLine[] {
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
-
-  // Build LCS length table
-  const m = oldLines.length;
-  const n = newLines.length;
-  const lcs: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        lcs[i][j] = lcs[i - 1][j - 1] + 1;
-      } else {
-        lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-      }
-    }
-  }
-
-  // Backtrack to produce diff
-  const result: DiffLine[] = [];
-  let i = m;
-  let j = n;
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      result.unshift({ type: "context", content: oldLines[i - 1] });
-      i--;
-      j--;
-    } else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
-      result.unshift({ type: "added", content: newLines[j - 1] });
-      j--;
-    } else {
-      result.unshift({ type: "removed", content: oldLines[i - 1] });
-      i--;
-    }
-  }
-
-  return result;
-}
-
-function DiffView({ oldContent, newContent }: { oldContent: string; newContent: string }) {
-  const lines = computeLineDiff(oldContent, newContent);
-
-  return (
-    <pre className="text-xs font-mono leading-relaxed overflow-x-auto">
-      {lines.map((line, idx) => {
-        if (line.type === "added") {
-          return (
-            <div key={idx} className="bg-green-950/40 text-green-300">
-              <span className="select-none text-green-500 mr-1">+</span>
-              {line.content}
-            </div>
-          );
-        }
-        if (line.type === "removed") {
-          return (
-            <div key={idx} className="bg-red-950/40 text-red-300 line-through decoration-red-700/40">
-              <span className="select-none text-red-500 mr-1">-</span>
-              {line.content}
-            </div>
-          );
-        }
-        return (
-          <div key={idx} className="text-gray-500">
-            <span className="select-none mr-1"> </span>
-            {line.content}
-          </div>
-        );
-      })}
-    </pre>
-  );
-}
 
 export function ArtifactDrawer({ projectId, phase, onClose }: ArtifactDrawerProps) {
   const [artifact, setArtifact] = useState<Artifact | null>(null);

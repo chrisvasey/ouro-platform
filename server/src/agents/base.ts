@@ -5,8 +5,15 @@
  * project context injected at the start of every prompt.
  */
 
-import { getProject, getArtifactByFilename, getFeedMessages, insertEvent, saveArtifact, postFeedMessage, sendInboxMessage } from "../db.js";
+import { getProject, getArtifactByFilename, getFeedMessages, insertEvent, saveArtifact, postFeedMessage, sendInboxMessage, createProposedChange } from "../db.js";
+import type { Artifact, ProposedChange } from "../db.js";
 import type { ClaudeRunResult } from "../claude.js";
+
+export const SELF_MOD_PATHS = ["/server/src/"] as const;
+
+export function isSelfModPath(filename: string): boolean {
+  return SELF_MOD_PATHS.some((p) => filename.startsWith(p) || filename.includes(p));
+}
 
 export interface AgentResult {
   /** Full markdown content to save as artifact */
@@ -51,12 +58,20 @@ export async function dispatchToolUses(
   projectId: string,
   toolUses: ClaudeRunResult["toolUses"],
   agentRole: string,
-  cycleId?: string
+  cycleId?: string,
+  notify?: (artifact: Artifact) => void,
+  notifyChange?: (change: ProposedChange) => void
 ): Promise<void> {
   for (const { name, input } of toolUses) {
     const inp = input as Record<string, unknown>;
     if (name === "save_artifact") {
-      await saveArtifact(projectId, inp.phase as string, inp.filename as string, inp.content as string, cycleId);
+      const filename = inp.filename as string;
+      if (isSelfModPath(filename)) {
+        const change = createProposedChange(projectId, agentRole, filename, inp.content as string, cycleId);
+        notifyChange?.(change);
+      } else {
+        await saveArtifact(projectId, inp.phase as string, filename, inp.content as string, cycleId, notify);
+      }
     } else if (name === "post_feed_message") {
       postFeedMessage(projectId, agentRole, inp.recipient as string, inp.content as string, inp.message_type as string);
     } else if (name === "request_human_input") {

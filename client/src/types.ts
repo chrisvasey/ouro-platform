@@ -23,7 +23,7 @@ export interface FeedMessage {
   sender_role: string;
   recipient: string;
   content: string;
-  message_type: "handoff" | "question" | "decision" | "note" | "escalate";
+  message_type: "handoff" | "question" | "decision" | "note" | "escalate" | "blocked";
   thinking?: string | null;
   created_at: number;
 }
@@ -40,6 +40,7 @@ export interface ProposedChange {
   proposed_by: string;
   file_path: string;
   diff_content: string;
+  original_content: string | null;
   status: "PENDING" | "APPROVED" | "REJECTED";
   reviewed_at: number | null;
   created_at: number;
@@ -92,7 +93,9 @@ export type WsEvent =
   | { event: "phase_change"; projectId: string; data: { phase: string } }
   | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } }
   | { event: "proposed_change_resolved"; projectId: string; data: { id: string; status: string } }
-  | { event: "mock_mode_changed"; data: { mockMode: boolean } };
+  | { event: "mock_mode_changed"; data: { mockMode: boolean } }
+  | { event: "artifact_created"; projectId: string; data: Artifact }
+  | { event: "proposed_change"; projectId: string; data: ProposedChange };
 
 export type WsStatus = "connecting" | "open" | "reconnecting" | "connected" | "disconnected";
 

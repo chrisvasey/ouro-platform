@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ProposedChange } from "../types";
 import { api } from "../api";
+import { DiffView } from "./DiffView";
 
 interface ProposedChangeModalProps {
   projectId: string;
@@ -10,6 +11,7 @@ interface ProposedChangeModalProps {
 
 export function ProposedChangeModal({ projectId, change, onResolved }: ProposedChangeModalProps) {
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"diff" | "full">("diff");
 
   async function handleApprove() {
     setLoading(true);
@@ -75,12 +77,53 @@ export function ProposedChangeModal({ projectId, change, onResolved }: ProposedC
             </code>
           </div>
 
+          {/* Tab bar */}
+          <div className="flex gap-1 px-5 pt-3 pb-0 border-b border-gray-800 flex-shrink-0">
+            <button
+              className={`text-xs px-3 py-1.5 rounded-t transition-colors ${
+                activeTab === "diff"
+                  ? "bg-gray-800 text-gray-100 border border-b-0 border-gray-700"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+              onClick={() => setActiveTab("diff")}
+            >
+              Diff
+            </button>
+            <button
+              className={`text-xs px-3 py-1.5 rounded-t transition-colors ${
+                activeTab === "full"
+                  ? "bg-gray-800 text-gray-100 border border-b-0 border-gray-700"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+              onClick={() => setActiveTab("full")}
+            >
+              Full
+            </button>
+          </div>
+
           {/* Content */}
-          <div className="flex-1 overflow-y-auto px-5 py-3">
-            <p className="text-xs text-gray-500 mb-2">Proposed content</p>
-            <pre className="text-xs text-gray-300 font-mono bg-gray-800/60 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed">
-              <code>{change.diff_content}</code>
-            </pre>
+          <div className="flex-1 min-h-0 overflow-y-auto max-h-[55vh] px-5 py-3">
+            {activeTab === "diff" ? (
+              <div>
+                {(!change.original_content || change.original_content.trim() === "") && (
+                  <div className="mb-2 text-xs text-amber-400 bg-amber-900/20 border border-amber-900/40 rounded px-3 py-1.5">
+                    New file — all content is new
+                  </div>
+                )}
+                <DiffView
+                  oldContent={change.original_content ?? ""}
+                  newContent={change.diff_content}
+                  maxLines={200}
+                />
+              </div>
+            ) : (
+              <div>
+                <p className="text-xs text-gray-500 mb-2">Proposed content</p>
+                <pre className="text-xs text-gray-300 font-mono bg-gray-800/60 rounded-lg p-4 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                  <code>{change.diff_content}</code>
+                </pre>
+              </div>
+            )}
           </div>
 
           {/* Actions */}

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Agent, CycleRun, FeedMessage, InboxMessage, Project, ProposedChange, WsEvent } from "./types";
+import type { Agent, Artifact, CycleRun, FeedMessage, InboxMessage, Project, ProposedChange, WsEvent } from "./types";
 import { api } from "./api";
 import { TopBar } from "./components/TopBar";
 import { AgentPanel, type AgentActionEntry } from "./components/AgentPanel";
 import { FeedPanel } from "./components/FeedPanel";
 import { InboxPanel } from "./components/InboxPanel";
 import { ArtifactDrawer } from "./components/ArtifactDrawer";
+import { ArtifactsPanel } from "./components/ArtifactsPanel";
 import { ProposedChangeModal } from "./components/ProposedChangeModal";
 
 // BASE_URL is '/ouro/' in production and '/' in dev (set by vite base option).
@@ -26,6 +27,9 @@ export default function App() {
   // Artifact drawer state: which phase to show (null = closed)
   const [artifactDrawerPhase, setArtifactDrawerPhase] = useState<string | null>(null);
   const [proposedChanges, setProposedChanges] = useState<ProposedChange[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifactInitialIds, setArtifactInitialIds] = useState<Set<string>>(new Set());
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [mockMode, setMockMode] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const currentProjectIdRef = useRef<string | null>(null);
@@ -54,6 +58,9 @@ export default function App() {
     setAgentHistory({});
     setArtifactDrawerPhase(null);
     setProposedChanges([]);
+    setArtifacts([]);
+    setArtifactInitialIds(new Set());
+    setArtifactsLoading(true);
 
     // Subscribe WS to this project
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -65,12 +72,16 @@ export default function App() {
       api.inbox.list(selectedProject.id),
       api.cycle.history(selectedProject.id),
       api.proposedChanges.list(selectedProject.id, "PENDING"),
-    ]).then(([feed, inbox, cycles, changes]) => {
+      api.artifacts.list(selectedProject.id),
+    ]).then(([feed, inbox, cycles, changes, arts]) => {
       if (currentProjectIdRef.current === selectedProject.id) {
         setFeedMessages(feed);
         setInboxMessages(inbox);
         setCycleHistory(cycles);
         setProposedChanges(changes);
+        setArtifacts(arts);
+        setArtifactInitialIds(new Set(arts.map((a) => a.id)));
+        setArtifactsLoading(false);
       }
     }).catch(console.error);
   }, [selectedProject?.id]);
@@ -186,6 +197,22 @@ export default function App() {
         prev.filter((c) => c.id !== (payload.data as { id: string }).id)
       );
     }
+
+    if (payload.event === "artifact_created") {
+      if (payload.projectId !== pid) return;
+      setArtifacts((prev) => {
+        if (prev.some((a) => a.id === payload.data.id)) return prev;
+        return [payload.data, ...prev];
+      });
+    }
+
+    if (payload.event === "proposed_change") {
+      if (payload.projectId !== pid) return;
+      setProposedChanges((prev) => {
+        if (prev.some((c) => c.id === payload.data.id)) return prev;
+        return [payload.data, ...prev];
+      });
+    }
   }
 
   // ── Start cycle ────────────────────────────────────────────────────────────
@@ -242,11 +269,22 @@ export default function App() {
         />
 
         {selectedProject && (
-          <InboxPanel
-            projectId={selectedProject.id}
-            messages={inboxMessages}
-            onMessagesChange={setInboxMessages}
-          />
+          <div className="flex flex-col h-full flex-shrink-0" style={{ width: "18rem" }}>
+            <div className="flex-shrink-0 max-h-[40%] overflow-y-auto">
+              <InboxPanel
+                projectId={selectedProject.id}
+                messages={inboxMessages}
+                onMessagesChange={setInboxMessages}
+              />
+            </div>
+            <ArtifactsPanel
+              projectId={selectedProject.id}
+              artifacts={artifacts}
+              initialIds={artifactInitialIds}
+              onPhaseClick={setArtifactDrawerPhase}
+              loading={artifactsLoading}
+            />
+          </div>
         )}
       </div>
 

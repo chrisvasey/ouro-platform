@@ -26,6 +26,7 @@ export default function App() {
   // Artifact drawer state: which phase to show (null = closed)
   const [artifactDrawerPhase, setArtifactDrawerPhase] = useState<string | null>(null);
   const [proposedChanges, setProposedChanges] = useState<ProposedChange[]>([]);
+  const [mockMode, setMockMode] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const currentProjectIdRef = useRef<string | null>(null);
 
@@ -36,6 +37,8 @@ export default function App() {
       setProjects(ps);
       if (ps.length > 0) setSelectedProject(ps[0]);
     }).catch(console.error);
+    // Fetch mock mode status on load
+    api.mockMode.get().then(({ mockMode: m }) => setMockMode(m)).catch(() => {});
   }, []);
 
   // ── Load project data when selection changes ───────────────────────────────
@@ -173,6 +176,10 @@ export default function App() {
       api.cycle.history(pid).then(setCycleHistory).catch(console.error);
     }
 
+    if (payload.event === "mock_mode_changed") {
+      setMockMode((payload.data as { mockMode: boolean }).mockMode);
+    }
+
     if (payload.event === "proposed_change_resolved") {
       if (payload.projectId !== pid) return;
       setProposedChanges((prev) =>
@@ -218,6 +225,7 @@ export default function App() {
         cycleHistory={cycleHistory}
         onStartCycle={handleStartCycle}
         onStopCycle={handleStopCycle}
+        mockMode={mockMode}
       />
 
       <div className="flex-1 flex overflow-hidden">

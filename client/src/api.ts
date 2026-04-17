@@ -70,4 +70,7 @@ export const api = {
       get<CycleRun[]>(`/projects/${projectId}/cycles`),
   },
   seed: () => post<{ ok: boolean; message: string }>("/seed"),
+  mockMode: {
+    get: () => get<{ mockMode: boolean }>("/mock-mode"),
+  },
 };

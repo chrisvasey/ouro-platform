@@ -11,6 +11,7 @@ interface TopBarProps {
   cycleHistory: CycleRun[];
   onStartCycle: () => void;
   onStopCycle: () => void;
+  mockMode?: boolean;
 }
 
 const PHASE_ORDER = ["research", "spec", "design", "build", "test", "review"];
@@ -120,6 +121,7 @@ export function TopBar({
   cycleHistory,
   onStartCycle,
   onStopCycle,
+  mockMode = false,
 }: TopBarProps) {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newName, setNewName] = useState("");
@@ -153,6 +155,16 @@ export function TopBar({
       <span className="text-gray-100 font-semibold tracking-tight text-sm">
         🔄 Ouro
       </span>
+
+      {/* Mock mode badge */}
+      {mockMode && (
+        <span
+          className="text-xs font-medium px-2 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-700/50"
+          title="No auth token — agents running on mock fallback"
+        >
+          Mock Mode
+        </span>
+      )}
 
       <div className="w-px h-5 bg-gray-700" />
 

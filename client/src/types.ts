@@ -91,7 +91,8 @@ export type WsEvent =
   | { event: "agent_status"; projectId: string; data: { role: string; status: string; current_task?: string | null } }
   | { event: "phase_change"; projectId: string; data: { phase: string } }
   | { event: "cycle_update"; projectId: string; data: { cycleId: string; status: string } }
-  | { event: "proposed_change_resolved"; projectId: string; data: { id: string; status: string } };
+  | { event: "proposed_change_resolved"; projectId: string; data: { id: string; status: string } }
+  | { event: "mock_mode_changed"; data: { mockMode: boolean } };
 
 export type WsStatus = "connecting" | "open" | "reconnecting" | "connected" | "disconnected";
 

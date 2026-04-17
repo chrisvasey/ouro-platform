@@ -149,6 +149,23 @@ async function executeWithClaudeCode(
           commitSha = shaMatch?.[1] ?? null;
           onProgress?.(`[Developer → All] Committed ${filesChanged} file(s) changed — ${commitSha ?? "no SHA"}`);
           console.log(`[developer] Committed: ${filesChanged} files, SHA ${commitSha}`);
+
+          // Push to origin/dev so self-improvement loop doesn't lose work on reset
+          try {
+            const pushProc = Bun.spawn(["git", "push", "origin", "dev"], {
+              cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
+              env: { ...process.env },
+            });
+            await pushProc.exited;
+            if (pushProc.exitCode === 0) {
+              console.log(`[developer] Pushed commit ${commitSha} to origin/dev`);
+            } else {
+              const pushErr = await new Response(pushProc.stderr).text();
+              console.warn(`[developer] Push to origin/dev failed: ${pushErr.slice(0, 200)}`);
+            }
+          } catch (pushErr) {
+            console.warn("[developer] Push error:", (pushErr as Error).message);
+          }
         }
       } else {
         console.log("[developer] No file changes after execution");

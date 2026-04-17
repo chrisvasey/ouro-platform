@@ -17,6 +17,7 @@ import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getProject, getArtifactByPhase, postFeedMessage } from "../db.js";
 import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
+import { ensureDemoProposedChange } from "../seed.js";
 
 const APP_URL = process.env.APP_URL ?? "https://lucial.noodlefish-carat.ts.net/ouro/";
 const SCREENSHOT_DIR = "/tmp";
@@ -524,6 +525,10 @@ Overall status: ${overallStatus}
 export async function runTester(projectId: string, taskDescription: string, cycleId?: string): Promise<AgentResult> {
   const meta = { projectId, cycleId, agentRole: "tester" };
   emitAgentStarted(meta, taskDescription);
+
+  // Ensure a PENDING demo proposed change exists so the BlockerModal is visible
+  // during Playwright checks and its acceptance criteria can be verified.
+  await ensureDemoProposedChange();
 
   try {
     const timestamp = Date.now();

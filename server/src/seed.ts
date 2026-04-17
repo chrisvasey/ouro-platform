@@ -23,6 +23,36 @@ import {
   AGENT_ROLES,
 } from "./db.js";
 
+const DEMO_CHANGE_CONTENT = `import { runClaude } from "../claude.js";
+import type { AgentResult } from "./base.js";
+
+export async function runDeveloper(projectId: string, task: string): Promise<AgentResult> {
+  const result = await runClaude({
+    system: "You are a senior developer. Implement the requested changes.",
+    messages: [{ role: "user", content: task }],
+  });
+  return { content: result.content, thinking: result.thinking };
+}`;
+
+/**
+ * Ensure a PENDING demo proposed change exists for the ouro-platform project.
+ * Called by the tester agent before Playwright runs so the BlockerModal is
+ * always visible and its acceptance criteria can be verified.
+ */
+export async function ensureDemoProposedChange(): Promise<void> {
+  const ouroProject = listProjects().find((p) => p.slug === "ouro-platform");
+  if (!ouroProject) return;
+  const pending = listProposedChanges(ouroProject.id, "PENDING");
+  if (pending.length > 0) return;
+  createProposedChange(
+    ouroProject.id,
+    "developer",
+    "server/src/agents/developer.ts",
+    DEMO_CHANGE_CONTENT
+  );
+  console.log("[seed] Created demo pending proposed change for ouro-platform.");
+}
+
 export async function seed(): Promise<void> {
   // Idempotent — check if already seeded
   const existing = listProjects();
@@ -134,28 +164,7 @@ export async function seed(): Promise<void> {
   }
 
   // Seed a demo pending proposed change for UI testing
-  const ouroProject = listProjects().find((p) => p.slug === "ouro-platform");
-  if (ouroProject) {
-    const existing = listProposedChanges(ouroProject.id, "PENDING");
-    if (existing.length === 0) {
-      createProposedChange(
-        ouroProject.id,
-        "developer",
-        "server/src/agents/developer.ts",
-        `import { runClaude } from "../claude.js";
-import type { AgentResult } from "./base.js";
-
-export async function runDeveloper(projectId: string, task: string): Promise<AgentResult> {
-  const result = await runClaude({
-    system: "You are a senior developer. Implement the requested changes.",
-    messages: [{ role: "user", content: task }],
-  });
-  return { content: result.content, thinking: result.thinking };
-}`
-      );
-      console.log("[seed] Created demo pending proposed change for ouro-platform.");
-    }
-  }
+  await ensureDemoProposedChange();
 
   console.log("[seed] Done.");
 }

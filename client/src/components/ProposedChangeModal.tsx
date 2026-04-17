@@ -104,6 +104,9 @@ export function ProposedChangeModal({ projectId, change, onResolved }: ProposedC
           {/* Content */}
           <div className="flex-1 min-h-0 overflow-y-auto max-h-[55vh] px-5 py-3">
             {activeTab === "diff" ? (
+              change.diff_content.trim() === "" ? (
+                <p className="text-sm text-gray-500 italic py-8 text-center">No diff available</p>
+              ) : (
               <div>
                 {(!change.original_content || change.original_content.trim() === "") && (
                   <div className="mb-2 text-xs text-amber-400 bg-amber-900/20 border border-amber-900/40 rounded px-3 py-1.5">
@@ -116,6 +119,7 @@ export function ProposedChangeModal({ projectId, change, onResolved }: ProposedC
                   maxLines={200}
                 />
               </div>
+              )
             ) : (
               <div>
                 <p className="text-xs text-gray-500 mb-2">Proposed content</p>

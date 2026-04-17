@@ -50,6 +50,7 @@ import { runTester } from "./agents/tester.js";
 import { runDocumenter } from "./agents/documenter.js";
 
 import type { AgentResult } from "./agents/base.js";
+import { setBaseBroadcast } from "./agents/base.js";
 
 /** Each agent call has at most this long before it is considered timed out. */
 // Per-phase timeout budgets — build takes longer due to multi-step chunking
@@ -131,6 +132,7 @@ let broadcast: BroadcastFn = () => {};
 
 export function setBroadcastFn(fn: BroadcastFn): void {
   broadcast = fn;
+  setBaseBroadcast(fn);
 }
 
 export function isCycleRunning(projectId: string): boolean {
@@ -239,11 +241,12 @@ export async function runCycle(projectId: string): Promise<void> {
         await waitForPendingProposedChanges(projectId);
       }
 
+      const phaseName = phase.charAt(0).toUpperCase() + phase.slice(1);
       const feedMsg = postFeedMessage(
         projectId,
         role,
         "all",
-        `[${phase.toUpperCase()} COMPLETE] ${result.summary}`,
+        `[${phase.toUpperCase()} COMPLETE] ${phaseName} phase complete — ${result.summary}`,
         "handoff"
       );
       broadcast(projectId, "feed_message", feedMsg);

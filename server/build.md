@@ -1,3 +1,17 @@
+# Build Plan — Cycle 15
+
+## Task List
+
+1. [server/src/db.ts] — Add optional `originalContent?: string` parameter to `createProposedChange()` and write it to the `original_content` column in the INSERT statement
+2. [server/src/loop.ts] — Change the phase-complete handoff feed message content from `[PHASE COMPLETE] summary` to `[PHASE COMPLETE] Research phase complete — summary` (i.e. include `${phase.charAt(0).toUpperCase() + phase.slice(1)} phase complete —` after the bracket prefix so the word "phase" is visible in the feed)
+3. [server/src/index.ts] — Approve endpoint: after `broadcastToProject(proposed_change_resolved)`, call `postFeedMessage(params.id, change.proposed_by, "all", \`proposed_change_resolved — approved: ${change.file_path}\`, "decision")` and broadcast the returned feed_message WS event
+4. [server/src/index.ts] — Reject endpoint: after `broadcastToProject(proposed_change_resolved)`, call `postFeedMessage(params.id, change.proposed_by, "all", \`proposed_change_resolved — rejected: ${change.file_path}\`, "note")` and broadcast the returned feed_message WS event
+5. [client/src/components/ProposedChangeModal.tsx] — In the "diff" tab branch, guard DiffView: if `change.diff_content.trim() === ""`, render `<p className="text-sm text-gray-500 italic py-8 text-center">No diff available</p>` instead of the DiffView/banner block
+6. [server/src/seed.ts] — Extract the demo-proposed-change creation block into an exported async function `ensureDemoProposedChange()`; inside it: (a) find the ouro-platform project, (b) skip if `listProposedChanges(id, "PENDING").length > 0`, (c) read current `server/src/agents/developer.ts` via `await Bun.file(join(import.meta.dir, "../../server/src/agents/developer.ts")).text()` (catch → `""`), (d) call `createProposedChange(id, "developer", "server/src/agents/developer.ts", demoContent, undefined, originalContent)` where `demoContent` is a minimal synthetic replacement string; update the existing inline block to call `ensureDemoProposedChange()` instead
+7. [server/src/agents/tester.ts] — Import `ensureDemoProposedChange` from `"../seed.js"`; call `await ensureDemoProposedChange()` at the start of `runTester()` (before story parsing) so a PENDING proposed change always exists when Playwright tests run, ensuring BlockerModal renders and its criteria are verifiable
+
+---
+<!-- previous content below -->
 # Implementation Plan — Cycle 9
 
 **Developer Agent** | Ouro Platform | 2026-03-28 | Rev 5

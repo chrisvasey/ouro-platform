@@ -5,11 +5,37 @@
  * project context injected at the start of every prompt.
  */
 
-import { getProject, getArtifactByFilename, getFeedMessages, insertEvent, saveArtifact, postFeedMessage, sendInboxMessage, createProposedChange } from "../db.js";
+import { getProject, getArtifactByFilename, getFeedMessages, insertEvent, saveArtifact, postFeedMessage, sendInboxMessage, createProposedChange, getProposedChangeById } from "../db.js";
 import type { Artifact, ProposedChange } from "../db.js";
 import type { ClaudeRunResult } from "../claude.js";
 
 export const SELF_MOD_PATHS = ["/server/src/"] as const;
+
+type BaseBroadcastFn = (projectId: string, event: string, data: unknown) => void;
+let baseBroadcast: BaseBroadcastFn = () => {};
+
+export function setBaseBroadcast(fn: BaseBroadcastFn): void {
+  baseBroadcast = fn;
+}
+
+export function getBaseBroadcast(): BaseBroadcastFn {
+  return baseBroadcast;
+}
+
+export async function waitForProposedChangeResolution(
+  changeId: string,
+  timeoutMs = 30 * 60 * 1000
+): Promise<"APPROVED" | "REJECTED"> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const change = getProposedChangeById(changeId);
+    if (change && change.status !== "PENDING") {
+      return change.status as "APPROVED" | "REJECTED";
+    }
+    await Bun.sleep(2000);
+  }
+  throw new Error(`Self-mod approval timed out for change ${changeId}`);
+}
 
 export function isSelfModPath(filename: string): boolean {
   return SELF_MOD_PATHS.some((p) => filename.startsWith(p) || filename.includes(p));
@@ -69,6 +95,14 @@ export async function dispatchToolUses(
       if (isSelfModPath(filename)) {
         const change = createProposedChange(projectId, agentRole, filename, inp.content as string, cycleId);
         notifyChange?.(change);
+        baseBroadcast(projectId, "proposed_change", change);
+        baseBroadcast(projectId, "agent_status", { role: agentRole, status: "blocked", current_task: "Awaiting self-mod approval" });
+        const resolution = await waitForProposedChangeResolution(change.id);
+        if (resolution === "APPROVED") {
+          await Bun.write(filename, inp.content as string);
+        }
+        baseBroadcast(projectId, "proposed_change_resolved", { id: change.id, status: resolution });
+        baseBroadcast(projectId, "agent_status", { role: agentRole, status: "thinking", current_task: null });
       } else {
         await saveArtifact(projectId, inp.phase as string, filename, inp.content as string, cycleId, notify);
       }

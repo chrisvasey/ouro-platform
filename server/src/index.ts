@@ -28,6 +28,7 @@ import {
   updateProposedChangeStatus,
   getSpendToday,
   getBudgetLimit,
+  insertEvent,
   type FeedMessage,
   type InboxMessage,
 } from "./db.js";
@@ -206,6 +207,14 @@ const app = new Elysia()
       return error(500, { message: `Failed to apply change: ${(writeErr as Error).message}` });
     }
     broadcastToProject(params.id, "proposed_change_resolved", { id: params.changeId, status: "APPROVED" });
+    const approvedFeedMsg = postFeedMessage(
+      params.id,
+      change.proposed_by,
+      "all",
+      `proposed_change_resolved — approved: ${change.file_path}`,
+      "decision"
+    );
+    broadcastToProject(params.id, "feed_message", approvedFeedMsg);
     return { ok: true };
   })
 
@@ -215,6 +224,14 @@ const app = new Elysia()
     if (!change) return error(404, { message: "Proposed change not found" });
     updateProposedChangeStatus(params.changeId, "REJECTED");
     broadcastToProject(params.id, "proposed_change_resolved", { id: params.changeId, status: "REJECTED" });
+    const rejectedFeedMsg = postFeedMessage(
+      params.id,
+      change.proposed_by,
+      "all",
+      `proposed_change_resolved — rejected: ${change.file_path}`,
+      "note"
+    );
+    broadcastToProject(params.id, "feed_message", rejectedFeedMsg);
     return { ok: true };
   })
 

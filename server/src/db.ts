@@ -641,6 +641,12 @@ export function createProposedChange(
   return { id, cycle_id: cycleId ?? null, project_id: projectId, proposed_by: proposedBy, file_path: filePath, diff_content: diffContent, original_content: originalContent, status: "PENDING", reviewed_at: null, created_at: ts };
 }
 
+export function getProposedChangeById(id: string): ProposedChange | null {
+  return db
+    .query<ProposedChange, [string]>("SELECT * FROM proposed_changes WHERE id = ?")
+    .get(id);
+}
+
 export function listProposedChanges(projectId: string, status?: string): ProposedChange[] {
   if (status) {
     return db

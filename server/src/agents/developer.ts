@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { runClaude } from "../claude.js";
 import { loadPrompt } from "../prompts.js";
 import { getArtifactByPhase, getProject } from "../db.js";
-import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, type AgentResult } from "./base.js";
+import { buildContextBlock, extractSummary, emitAgentStarted, emitAgentCompleted, emitAgentFailed, dispatchToolUses, isSelfModPath, waitForProposedChangeResolution, getBaseBroadcast, type AgentResult } from "./base.js";
+import { createProposedChange } from "../db.js";
 
 /** Per-step timeout: 240 seconds. Each micro-call has its own independent budget. */
 const STEP_TIMEOUT_MS = 240_000;
@@ -47,6 +48,9 @@ function resolveWorkspaceDir(slug: string | null): string {
 async function executeWithClaudeCode(
   workspaceDir: string,
   prompt: string,
+  projectId: string,
+  agentRole: string,
+  cycleId?: string,
   onProgress?: (msg: string) => void
 ): Promise<{ output: string; filesChanged: number; commitSha: string | null; success: boolean }> {
   const token =
@@ -128,11 +132,43 @@ async function executeWithClaudeCode(
       filesChanged = changedLines.length;
 
       if (filesChanged > 0) {
-        // Stage and commit
-        const addProc = Bun.spawn(["git", "add", "-A"], {
-          cwd: workspaceDir, stdout: "pipe", stderr: "pipe",
-        });
-        await addProc.exited;
+        // Partition changed files: guarded (server/src/) vs normal
+        const relPaths = changedLines.map((l) => l.slice(3).trim());
+        const guardedFiles = relPaths.filter((p) => isSelfModPath(p) || p.startsWith("server/src/"));
+        const normalFiles = relPaths.filter((p) => !isSelfModPath(p) && !p.startsWith("server/src/"));
+
+        // Self-mod gate: propose each guarded file and await approval/rejection
+        for (const rel of guardedFiles) {
+          const absPath = join(workspaceDir, rel);
+          let content = "";
+          try {
+            content = await Bun.file(absPath).text();
+          } catch {
+            // File deleted or unreadable — skip
+            continue;
+          }
+          const change = createProposedChange(projectId, agentRole, absPath, content, cycleId);
+          const broadcast = getBaseBroadcast();
+          broadcast(projectId, "proposed_change", change);
+          broadcast(projectId, "agent_status", { role: agentRole, status: "blocked", current_task: `Awaiting self-mod approval: ${rel}` });
+          const resolution = await waitForProposedChangeResolution(change.id);
+          broadcast(projectId, "proposed_change_resolved", { id: change.id, status: resolution });
+          broadcast(projectId, "agent_status", { role: agentRole, status: "thinking", current_task: null });
+          if (resolution === "APPROVED") {
+            const stageProc = Bun.spawn(["git", "add", rel], { cwd: workspaceDir, stdout: "pipe", stderr: "pipe" });
+            await stageProc.exited;
+          } else {
+            // Revert rejected file
+            const revertProc = Bun.spawn(["git", "checkout", "HEAD", "--", rel], { cwd: workspaceDir, stdout: "pipe", stderr: "pipe" });
+            await revertProc.exited;
+          }
+        }
+
+        // Stage normal (non-guarded) files directly
+        for (const rel of normalFiles) {
+          const stageProc = Bun.spawn(["git", "add", rel], { cwd: workspaceDir, stdout: "pipe", stderr: "pipe" });
+          await stageProc.exited;
+        }
 
         const commitMsg = `feat(ouro): cycle auto-implementation — ${filesChanged} file(s) changed`;
         const commitProc = Bun.spawn(
@@ -397,7 +433,7 @@ export async function runDeveloper(
 
     let executionResult: { output: string; filesChanged: number; commitSha: string | null; success: boolean };
     try {
-      executionResult = await executeWithClaudeCode(workspaceDir, executePrompt, onFeed);
+      executionResult = await executeWithClaudeCode(workspaceDir, executePrompt, projectId, "developer", cycleId, onFeed);
     } catch (execErr) {
       console.warn("[developer] Step 5 execution error:", (execErr as Error).message);
       executionResult = {

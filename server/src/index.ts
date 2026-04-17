@@ -66,6 +66,11 @@ const app = new Elysia()
   // ── Health ──
   .get("/health", () => ({ ok: true, ts: Date.now() }))
 
+  // ── Mock mode ──
+  .get("/api/mock-mode", () => ({
+    mockMode: !(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.CLAUDE_OAUTH_TOKEN),
+  }))
+
   // ── Projects ──
   .get("/api/projects", () => listProjects())
 

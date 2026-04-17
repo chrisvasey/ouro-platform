@@ -7,6 +7,7 @@
 
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
+import { join } from "path";
 
 import {
   listProjects,
@@ -189,11 +190,21 @@ const app = new Elysia()
     return listProposedChanges(params.id, status);
   })
 
-  .post("/api/projects/:id/proposed-changes/:changeId/approve", ({ params, error }) => {
+  .post("/api/projects/:id/proposed-changes/:changeId/approve", async ({ params, error }) => {
     const changes = listProposedChanges(params.id);
     const change = changes.find((c) => c.id === params.changeId);
     if (!change) return error(404, { message: "Proposed change not found" });
     updateProposedChangeStatus(params.changeId, "APPROVED");
+    const absPath = change.file_path.startsWith("/")
+      ? change.file_path
+      : join(import.meta.dir, "../../", change.file_path);
+    try {
+      await Bun.write(absPath, change.diff_content);
+      console.log(`[proposed-change] Applied approved change to ${absPath}`);
+    } catch (writeErr) {
+      console.error(`[proposed-change] Failed to write ${absPath}:`, writeErr);
+      return error(500, { message: `Failed to apply change: ${(writeErr as Error).message}` });
+    }
     broadcastToProject(params.id, "proposed_change_resolved", { id: params.changeId, status: "APPROVED" });
     return { ok: true };
   })

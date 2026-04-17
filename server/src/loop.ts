@@ -35,6 +35,7 @@ import {
   postFeedMessage,
   sendInboxMessage,
   getArtifactByPhase,
+  listProposedChanges,
   createCycleRecord,
   updateCycleRecord,
   insertEvent,
@@ -152,6 +153,13 @@ export function stopCycle(projectId: string): boolean {
  * Resolves when all phases complete (or after escalation) or the cycle is stopped.
  * Rejects only on unexpected setup errors (project not found, already running).
  */
+async function waitForPendingProposedChanges(projectId: string): Promise<void> {
+  const POLL_MS = 2000;
+  while (listProposedChanges(projectId, "PENDING").length > 0) {
+    await Bun.sleep(POLL_MS);
+  }
+}
+
 export async function runCycle(projectId: string): Promise<void> {
   const project = getProject(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
@@ -214,6 +222,22 @@ export async function runCycle(projectId: string): Promise<void> {
       await saveArtifact(projectId, phase, filename, result.content, cycleRecord.id, (artifact) => {
         broadcast(projectId, "artifact_created", artifact);
       });
+
+      const pendingChanges = listProposedChanges(projectId, "PENDING");
+      if (pendingChanges.length > 0) {
+        for (const change of pendingChanges) {
+          broadcast(projectId, "proposed_change", change);
+        }
+        const blockedMsg = postFeedMessage(
+          projectId,
+          role,
+          "all",
+          `[${phase.toUpperCase()} BLOCKED] Proposed change to guarded path requires approval: ${pendingChanges.map((c) => c.file_path).join(", ")}`,
+          "blocked"
+        );
+        broadcast(projectId, "feed_message", blockedMsg);
+        await waitForPendingProposedChanges(projectId);
+      }
 
       const feedMsg = postFeedMessage(
         projectId,

@@ -32,6 +32,7 @@ const TYPE_COLOUR: Record<string, string> = {
   decision: "bg-green-900/60 text-green-400",
   note: "bg-gray-800 text-gray-500",
   escalate: "bg-red-900/60 text-red-400",
+  blocked: "bg-orange-900/60 text-orange-400",
 };
 
 // ─── feat/mvp: DB-backed cycle history constants ──────────────────────────────
